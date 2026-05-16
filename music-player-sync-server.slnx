@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="EzAuth/EzAuth.csproj" />
+  <Project Path="MusicPlayerSyncInterface/MusicPlayerSyncInterface.csproj" />
+  <Project Path="MusicPlayerSyncServer/MusicPlayerSyncServer.csproj" />
+</Solution>
