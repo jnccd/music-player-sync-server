@@ -3,5 +3,5 @@
 { pkgs ? import <nixpkgs> { } }:
 with pkgs;
 mkShell {
-  packages = [ icu dotnet-sdk dotnet-ef ];
+  packages = [ icu dotnetCorePackages.sdk_10_0-bin dotnet-ef ];
 }
