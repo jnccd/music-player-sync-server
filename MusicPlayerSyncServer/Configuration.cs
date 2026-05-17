@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using MusicPlayerSyncServer.Database;
 using MusicPlayerSyncServer.Services;
 using MusicPlayerSyncServer.Services.Auth;
 using System.Net;
@@ -49,6 +50,7 @@ public static class Configuration
 
         // Other
         builder.Services.AddHttpClient();
+        builder.Services.AddDbContext<SongDbContext>(_ => { });
         builder.Services.AddOptions<AuthOptions>().Configure((authOption) =>
         {
             authOption.WriteLogs = true;
