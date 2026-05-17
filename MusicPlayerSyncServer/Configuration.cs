@@ -116,7 +116,8 @@ public static class Configuration
             request.EnableBuffering();
         request.Body.Position = 0;
 
-        var rawRequestBody = await new StreamReader(request.Body).ReadToEndAsync();
+        using var reader = new StreamReader(request.Body);
+        var rawRequestBody = await reader.ReadToEndAsync();
 
         request.Body.Position = 0;
 
