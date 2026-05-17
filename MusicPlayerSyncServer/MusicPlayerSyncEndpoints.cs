@@ -13,8 +13,6 @@ namespace MusicPlayerSyncServer;
 
 public static class MusicPlayerSyncEndpoints
 {
-    public record SyncInitRequest(UpvotedSong[] songs, SongHistoryEntry[] historyEntries);
-
     public static void RegisterNotesEndpoints(this IEndpointRouteBuilder routes, IServiceProvider services)
     {
         routes.MapGet("/keycloak", (
@@ -29,24 +27,49 @@ public static class MusicPlayerSyncEndpoints
 
         routes.MapPost("/sync/init", (
             [FromHeader(Name = "Authorization")] string? authTokenHeader,
-            [FromBody] SyncInitRequest request,
+            [FromBody] SongDataAndHistory request,
             [FromServices] AuthService auth,
             [FromServices] SongDbContext songDbContext,
             HttpClient httpClient) =>
         {
+            Console.WriteLine($"Received sync init request with {request?.songs?.Length} songs and {request?.historyEntries?.Length} history entries.");
             return auth?.GetUser(authTokenHeader, httpClient, u =>
             {
-                request.songs.ToList().ForEach(s => s.UserId = u.UserId);
-                request.historyEntries.ToList().ForEach(h => h.UserId = u.UserId);
+                request?.songs.ToList().ForEach(s => s.UserId = u.UserId);
+                request?.historyEntries.ToList().ForEach(h => h.UserId = u.UserId);
 
-                if (songDbContext.UpvotedSongs.Where(x => x.UserId == u.UserId).Any() || songDbContext.SongHistoryEntries.Where(h => h.UserId == u.UserId).Any())
-                    return Results.Conflict();
+                if (request?.songs == null || request?.historyEntries == null)
+                    return Results.BadRequest("Songs and history entries cannot be null.");
+
+                if (!request.songs.Any() || !request.historyEntries.Any())
+                    return Results.BadRequest("Songs and history entries cannot be empty.");
+
+                if (songDbContext.UpvotedSongs.Where(x => x.UserId == u.UserId).Any())
+                    return Results.Conflict("User already has upvoted those songs in the database.");
+
+                if (songDbContext.SongHistoryEntries.Where(h => h.UserId == u.UserId).Any())
+                    return Results.Conflict("User already has history entries in the database.");
 
                 songDbContext.UpvotedSongs.AddRange(request.songs);
                 songDbContext.SongHistoryEntries.AddRange(request.historyEntries);
                 songDbContext.SaveChanges();
 
                 return Results.Ok();
+            });
+        });
+
+        routes.MapPost("/sync/pull", (
+            [FromHeader(Name = "Authorization")] string? authTokenHeader,
+            [FromServices] AuthService auth,
+            [FromServices] SongDbContext songDbContext,
+            HttpClient httpClient) =>
+        {
+            return auth?.GetUser(authTokenHeader, httpClient, u =>
+            {
+                var songs = songDbContext.UpvotedSongs.Where(s => s.UserId == u.UserId).ToArray();
+                var historyEntries = songDbContext.SongHistoryEntries.Where(h => h.UserId == u.UserId).ToArray();
+
+                return Results.Ok(new SongDataAndHistory(songs, historyEntries));
             });
         });
 
