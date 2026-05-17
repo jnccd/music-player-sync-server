@@ -14,6 +14,15 @@ public class AuthService(IOptions<AuthOptions> options, LoggerService logger, So
     readonly bool writeLogs = options.Value.WriteLogs;
     readonly bool give404 = options.Value.Give404;
 
+    /// <summary>
+    /// Returns the user associated with the given auth token, or an appropriate error result if the token is invalid or if there was an error during validation.
+    /// If the token is valid but the user is not found in the database, a new user will be created based on the information from the token. If give404 is true, a 404 Not Found result will be returned instead of an AuthReqResult when the user is not found.
+    /// </summary>
+    /// <param name="authTokenHeader">The authorization token header.</param>
+    /// <param name="httpClient">The HTTP client for making requests.</param>
+    /// <param name="handleRequest">The function to handle the user request.</param>
+    /// <returns>The result of the user request.</returns>
+    /// <exception cref="NullReferenceException">If parts of the user information from the auth backend is null.</exception>
     public IResult GetUser(string? authTokenHeader, HttpClient httpClient, Func<User, IResult> handleRequest)
     {
         Result<User> userResult = GetUser(authTokenHeader, httpClient);
@@ -23,6 +32,14 @@ public class AuthService(IOptions<AuthOptions> options, LoggerService logger, So
             return userResult.HttpResult ?? Results.Problem("Unknown error");
     }
 
+    /// <summary>
+    /// Returns the user associated with the given auth token, or an appropriate error result if the token is invalid or if there was an error during validation.
+    /// If the token is valid but the user is not found in the database, a new user will be created based on the information from the token. If give404 is true, a 404 Not Found result will be returned instead of an AuthReqResult when the user is not found.
+    /// </summary>
+    /// <param name="authTokenHeader">The authorization token header.</param>
+    /// <param name="httpClient">The HTTP client for making requests.</param>
+    /// <returns>The user associated with the token, or an error result.</returns>
+    /// <exception cref="NullReferenceException">If parts of the user information from the auth backend is null.</exception>
     public Result<User> GetUser(string? authTokenHeader, HttpClient httpClient)
     {
         if (authTokenHeader?.Length < 2)
@@ -48,16 +65,16 @@ public class AuthService(IOptions<AuthOptions> options, LoggerService logger, So
             return new Result<User>(Results.BadRequest($"Token check failed: {ex.Message}"));
         }
 
-        var notesUser = songDbContext.Users?.FirstOrDefault(u => userInfo != null && u.UserId == userInfo.UserId);
-        if (notesUser == null && userInfo?.UserId != null)
+        var apiUser = songDbContext.Users?.FirstOrDefault(u => userInfo != null && u.UserId == userInfo.UserId);
+        if (apiUser == null && userInfo?.UserId != null)
         {
-            songDbContext.Users?.Add(notesUser = new(
+            songDbContext.Users?.Add(apiUser = new(
                     userInfo?.UserId ?? throw new NullReferenceException(nameof(userInfo.UserId)),
                     userInfo?.UserHandle ?? throw new NullReferenceException(nameof(userInfo.UserHandle)),
                     userInfo?.UserDisplayName ?? throw new NullReferenceException(nameof(userInfo.UserDisplayName))));
             songDbContext.SaveChanges();
         }
-        if (notesUser == null) return new Result<User>(give404 ? Results.NotFound() : new AuthReqResult());
-        return new Result<User>(notesUser);
+        if (apiUser == null) return new Result<User>(give404 ? Results.NotFound() : new AuthReqResult());
+        return new Result<User>(apiUser);
     }
 }
