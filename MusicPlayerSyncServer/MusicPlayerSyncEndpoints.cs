@@ -35,8 +35,16 @@ public static class MusicPlayerSyncEndpoints
             Console.WriteLine($"Received sync init request with {request?.songs?.Length} songs and {request?.historyEntries?.Length} history entries.");
             return auth?.GetUser(authTokenHeader, httpClient, u =>
             {
-                request?.songs.ToList().ForEach(s => s.UserId = u.UserId);
-                request?.historyEntries.ToList().ForEach(h => h.UserId = u.UserId);
+                request?.songs.ToList().ForEach(s =>
+                {
+                    s.UserId = u.UserId;
+                    s.DateAdded = s.DateAdded?.UtcDateTime;
+                });
+                request?.historyEntries.ToList().ForEach(h =>
+                {
+                    h.UserId = u.UserId;
+                    h.Date = h.Date.UtcDateTime;
+                });
 
                 if (request?.songs == null || request?.historyEntries == null)
                     return Results.BadRequest("Songs and history entries cannot be null.");
