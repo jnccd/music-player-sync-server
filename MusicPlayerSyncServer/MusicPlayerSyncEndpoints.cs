@@ -91,6 +91,7 @@ public static class MusicPlayerSyncEndpoints
             return auth?.GetUser(authTokenHeader, httpClient, u =>
             {
                 song.UserId = u.UserId;
+                song.DateAdded = song.DateAdded?.UtcDateTime;
 
                 if (songDbContext.UpvotedSongs.Where(x => x.SongId == song.SongId).Any())
                     return Results.Conflict();
@@ -112,7 +113,7 @@ public static class MusicPlayerSyncEndpoints
             return auth?.GetUser(authTokenHeader, httpClient, u =>
             {
                 entry.UserId = u.UserId;
-
+                entry.Date = entry.Date.UtcDateTime;
                 if (songDbContext.SongHistoryEntries.Where(h => h.UserId == entry.UserId && h.SongId == entry.SongId && h.Date == entry.Date).Any())
                     return Results.Conflict();
 
