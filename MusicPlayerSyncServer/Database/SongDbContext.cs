@@ -20,8 +20,10 @@ public class SongDbContext : DbContext
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
     {
+        Console.WriteLine("Configuring database connection...");
         if (Environment.GetEnvironmentVariable("DB_PROVIDER") == "postgres" || string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DB_PROVIDER")))
         {
+            Console.WriteLine("Using PostgreSQL database provider.");
             options.UseNpgsql(Environment.GetEnvironmentVariable("POSTGRES_DB_ACCESS"));
             DbStatus = "Using PostgreSQL DB";
         }
@@ -29,6 +31,7 @@ public class SongDbContext : DbContext
         {
             var exePath = Path.GetDirectoryName(Assembly.GetEntryAssembly()?.Location ?? "~") + Path.DirectorySeparatorChar;
             var sqlitePath = (Environment.GetEnvironmentVariable("MUSIC_PLAYER_SQLITE_DB_PATH") ?? exePath) + "song.db";
+            Console.WriteLine($"Using SQLite database provider at {sqlitePath}.");
 
             options.UseSqlite($"Data Source={sqlitePath}");
             DbStatus = $"Using SQLite DB at {sqlitePath}";

@@ -8,7 +8,7 @@ using static MusicPlayerSyncServer.Configuration;
 
 namespace MusicPlayerSyncServer.Services.Auth;
 
-[RegisterImplementation(ServiceRegisterType.Singleton, typeof(AuthService))]
+[RegisterImplementation(ServiceRegisterType.Scoped, typeof(AuthService))]
 public class AuthService(IOptions<AuthOptions> options, LoggerService logger, SongDbContext songDbContext)
 {
     readonly bool writeLogs = options.Value.WriteLogs;

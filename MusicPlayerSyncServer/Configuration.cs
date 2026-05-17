@@ -22,7 +22,7 @@ public static class Configuration
         public readonly Type serviceType = serviceType;
     }
 
-    public enum ServiceRegisterType { Singleton, Transient }
+    public enum ServiceRegisterType { Singleton, Transient, Scoped }
 
     public static void RegisterServices(this WebApplicationBuilder builder)
     {
@@ -42,6 +42,8 @@ public static class Configuration
                 builder.Services.AddSingleton(declaringType, attr.serviceType);
             else if (attr?.serviceRegisterType == ServiceRegisterType.Transient)
                 builder.Services.AddTransient(declaringType, attr.serviceType);
+            else if (attr?.serviceRegisterType == ServiceRegisterType.Scoped)
+                builder.Services.AddScoped(declaringType, attr.serviceType);
         }
 
         // Swagger
