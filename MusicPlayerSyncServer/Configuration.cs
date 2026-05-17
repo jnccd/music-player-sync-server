@@ -62,7 +62,7 @@ public static class Configuration
     public static void ConfigureWebhost(this WebApplicationBuilder builder)
     {
         ushort port = string.IsNullOrWhiteSpace(builder.Configuration["PORT"]) ?
-            (ushort)7779 :
+            (ushort)7780 :
             Convert.ToUInt16(builder.Configuration["PORT"]);
 
         builder.WebHost.ConfigureKestrel(options =>

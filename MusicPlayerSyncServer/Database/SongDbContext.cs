@@ -13,6 +13,9 @@ public class SongDbContext : DbContext
     public DbSet<UpvotedSong> UpvotedSongs { get; set; }
     public DbSet<SongHistoryEntry> SongHistoryEntries { get; set; }
 
+    public SongDbContext(DbContextOptions<SongDbContext> options)
+        : base(options) { }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder) => MusicPlayerSyncInterface.Database.Model.OnModelCreating(modelBuilder);
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
