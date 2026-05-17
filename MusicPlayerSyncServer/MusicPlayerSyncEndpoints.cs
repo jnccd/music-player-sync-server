@@ -58,7 +58,7 @@ public static class MusicPlayerSyncEndpoints
             });
         });
 
-        routes.MapPost("/sync/pull", (
+        routes.MapGet("/sync/pull", (
             [FromHeader(Name = "Authorization")] string? authTokenHeader,
             [FromServices] AuthService auth,
             [FromServices] SongDbContext songDbContext,
