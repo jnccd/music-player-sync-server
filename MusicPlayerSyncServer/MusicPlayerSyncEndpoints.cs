@@ -27,7 +27,7 @@ public static class MusicPlayerSyncEndpoints
 
         routes.MapPost("/sync/init", (
             [FromHeader(Name = "Authorization")] string? authTokenHeader,
-            [FromBody] SongDataAndHistory request,
+            [FromBody] UserSongDataAndHistory request,
             [FromServices] AuthService auth,
             [FromServices] SongDbContext songDbContext,
             HttpClient httpClient) =>
@@ -69,7 +69,7 @@ public static class MusicPlayerSyncEndpoints
                 var songs = songDbContext.UpvotedSongs.Where(s => s.UserId == u.UserId).ToArray();
                 var historyEntries = songDbContext.SongHistoryEntries.Where(h => h.UserId == u.UserId).ToArray();
 
-                return Results.Ok(new SongDataAndHistory(songs, historyEntries));
+                return Results.Ok(new UserSongDataAndHistory([u], songs, historyEntries));
             });
         });
 
