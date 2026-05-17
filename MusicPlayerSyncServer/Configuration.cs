@@ -1,0 +1,123 @@
+﻿using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using MusicPlayerSyncServer.Services;
+using MusicPlayerSyncServer.Services.Auth;
+using System.Net;
+using System.Reflection;
+using System.Security.Cryptography.X509Certificates;
+
+namespace MusicPlayerSyncServer;
+
+public static class Configuration
+{
+    public static readonly string GeneralHttpClientName = "GeneralClient";
+
+    [AttributeUsage(AttributeTargets.Interface | AttributeTargets.Class)]
+    public class RegisterImplementation(ServiceRegisterType serviceRegisterType, Type serviceType) : Attribute
+    {
+        public readonly ServiceRegisterType serviceRegisterType = serviceRegisterType;
+        public readonly Type serviceType = serviceType;
+    }
+
+    public enum ServiceRegisterType { Singleton, Transient }
+
+    public static void RegisterServices(this WebApplicationBuilder builder)
+    {
+        // Local Assembly Services
+        Type[] serviceTypes = (from domainAssembly in AppDomain.CurrentDomain.GetAssemblies()
+                               from declaringType in domainAssembly.GetTypes()
+                               where declaringType.Module == typeof(Configuration).Module
+                                   && declaringType.CustomAttributes.Any(x => x.AttributeType == typeof(RegisterImplementation))
+                               select declaringType).ToArray();
+        foreach (var declaringType in serviceTypes)
+        {
+            var attr = declaringType.GetCustomAttribute<RegisterImplementation>();
+
+            if (attr == null || attr?.serviceType == null || attr?.serviceRegisterType == null) continue;
+
+            if (attr.serviceRegisterType == ServiceRegisterType.Singleton)
+                builder.Services.AddSingleton(declaringType, attr.serviceType);
+            else if (attr?.serviceRegisterType == ServiceRegisterType.Transient)
+                builder.Services.AddTransient(declaringType, attr.serviceType);
+        }
+
+        // Swagger
+        builder.Services.AddEndpointsApiExplorer();
+        builder.Services.AddSwaggerGen(c => c.UseOneOfForPolymorphism());
+
+        // Other
+        builder.Services.AddHttpClient();
+        builder.Services.AddOptions<AuthOptions>().Configure((authOption) =>
+        {
+            authOption.WriteLogs = true;
+            authOption.KeycloakClient = builder.Configuration["KEYCLOAK_CLIENT_ID"];
+            authOption.KeycloakRealmUrl = builder.Configuration["KEYCLOAK_REALM_URL"];
+        });
+    }
+
+    public static void ConfigureWebhost(this WebApplicationBuilder builder)
+    {
+        ushort port = string.IsNullOrWhiteSpace(builder.Configuration["PORT"]) ?
+            (ushort)7779 :
+            Convert.ToUInt16(builder.Configuration["PORT"]);
+
+        builder.WebHost.ConfigureKestrel(options =>
+        {
+            options.Listen(IPAddress.Any, port, listenOptions => { });
+        });
+
+        builder.Services.AddCors();
+    }
+
+    public static void ConfigureWebApp(this WebApplication app)
+    {
+        var logger = app.Services.GetService(typeof(LoggerService)) as LoggerService;
+#if DEBUG
+        logger!.WriteLine("Launching in development mode!");
+        app.UseSwagger();
+        app.UseSwaggerUI();
+
+        app.UseCors(policy => policy
+            .AllowAnyOrigin()
+            .AllowAnyMethod()
+            .AllowAnyHeader());
+#endif
+    }
+
+    public static void RegisterMiddlewares(this WebApplication app)
+    {
+        app.AddRequestLoggingMiddleware();
+    }
+
+    public static void AddRequestLoggingMiddleware(this WebApplication app)
+    {
+        var logger = app.Services.GetService(typeof(LoggerService)) as LoggerService;
+        app.Use(async (context, next) =>
+        {
+            if (context.Request.Method != "GET")
+                try
+                {
+                    logger?.WriteLine($"{context.Request.Method} {context.Request.Path}{context.Request.QueryString} - ORIGIN: {context.Request.Headers.Origin}");
+                }
+                catch (Exception e)
+                {
+                    logger?.WriteLine(e);
+                }
+            await next.Invoke();
+        });
+    }
+    private static async Task<string> GetRequestBody(HttpRequest request)
+    {
+        if (!request.Body.CanSeek)
+            request.EnableBuffering();
+        request.Body.Position = 0;
+
+        var rawRequestBody = await new StreamReader(request.Body).ReadToEndAsync();
+
+        request.Body.Position = 0;
+
+        return rawRequestBody;
+    }
+}
