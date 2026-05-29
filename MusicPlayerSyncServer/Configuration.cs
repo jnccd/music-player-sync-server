@@ -1,4 +1,6 @@
-﻿using Microsoft.AspNetCore.Builder;
+﻿using EzAuth.Interfaces;
+using EzAuth.Keycloak;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -52,12 +54,13 @@ public static class Configuration
 
         // Other
         builder.Services.AddHttpClient();
+        builder.Services.AddSingleton<IEzAuth>(new EzKeycloak());
         builder.Services.AddDbContext<SongDbContext>(_ => { });
         builder.Services.AddOptions<AuthOptions>().Configure((authOption) =>
         {
             authOption.WriteLogs = true;
-            authOption.KeycloakClient = builder.Configuration["KEYCLOAK_CLIENT_ID"];
-            authOption.KeycloakRealmUrl = builder.Configuration["KEYCLOAK_REALM_URL"];
+            authOption.AuthBackendClient = builder.Configuration["AUTH_BACKEND_CLIENT_ID"];
+            authOption.AuthBackendRealmUrl = builder.Configuration["AUTH_BACKEND_REALM_URL"];
         });
     }
 

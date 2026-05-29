@@ -1,5 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using EzAuth;
+using EzAuth.Interfaces;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -15,13 +16,13 @@ public static class MusicPlayerSyncEndpoints
 {
     public static void RegisterNotesEndpoints(this IEndpointRouteBuilder routes, IServiceProvider services)
     {
-        routes.MapGet("/keycloak", (
+        routes.MapGet("/authBackend", (
            IOptions<AuthOptions> authOptions) =>
         {
-            return Results.Ok(new
+            return Results.Ok(new EzAuthAddress
             {
-                authOptions.Value.KeycloakRealmUrl,
-                authOptions.Value.KeycloakClient
+                RealmUrl = authOptions.Value.AuthBackendRealmUrl,
+                Client = authOptions.Value.AuthBackendClient
             });
         });
 

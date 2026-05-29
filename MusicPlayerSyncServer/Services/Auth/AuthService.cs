@@ -9,7 +9,7 @@ using static MusicPlayerSyncServer.Configuration;
 namespace MusicPlayerSyncServer.Services.Auth;
 
 [RegisterImplementation(ServiceRegisterType.Scoped, typeof(AuthService))]
-public class AuthService(IOptions<AuthOptions> options, LoggerService logger, SongDbContext songDbContext)
+public class AuthService(IOptions<AuthOptions> options, LoggerService logger, SongDbContext songDbContext, IEzAuth authBackendService)
 {
     readonly bool writeLogs = options.Value.WriteLogs;
     readonly bool give404 = options.Value.Give404;
@@ -51,7 +51,7 @@ public class AuthService(IOptions<AuthOptions> options, LoggerService logger, So
         EzAuthUserInfo? userInfo;
         try
         {
-            if (!EzKeycloak.IsTokenValid(httpClient, options.Value.KeycloakRealmUrl ?? "", authTokenHeader?.Split(" ")[1] ?? "", out userInfo))
+            if (!authBackendService.IsTokenValid(httpClient, options.Value.AuthBackendRealmUrl ?? "", authTokenHeader?.Split(" ")[1] ?? "", out userInfo))
             {
                 if (writeLogs)
                     logger.WriteLine($"[Auth] Invalid token: {authTokenHeader}");
