@@ -38,34 +38,34 @@ public static class MusicPlayerSyncEndpointsV1
             [FromServices] SongDbContext songDbContext,
             HttpClient httpClient) =>
         {
-            Console.WriteLine($"Received sync init request with {request?.songs?.Length} songs and {request?.historyEntries?.Length} history entries.");
-            return auth?.GetUser(authTokenHeader, httpClient, u =>
+            Console.WriteLine($"Received sync init request with {request?.Songs?.Length} songs and {request?.HistoryEntries?.Length} history entries.");
+            return auth?.GetUser(authTokenHeader, httpClient, authedUser =>
             {
-                request?.songs.ToList().ForEach(s =>
+                request?.Songs.ToList().ForEach(s =>
                 {
-                    s.UserId = u.UserId;
+                    s.UserId = authedUser.UserId;
                     s.DateAdded = s.DateAdded?.UtcDateTime;
                 });
-                request?.historyEntries.ToList().ForEach(h =>
+                request?.HistoryEntries.ToList().ForEach(h =>
                 {
-                    h.UserId = u.UserId;
+                    h.UserId = authedUser.UserId;
                     h.Date = h.Date.UtcDateTime;
                 });
 
-                if (request?.songs == null || request?.historyEntries == null)
+                if (request?.Songs == null || request?.HistoryEntries == null)
                     return Results.BadRequest("Songs and history entries cannot be null.");
 
-                if (!request.songs.Any() || !request.historyEntries.Any())
+                if (!request.Songs.Any() || !request.HistoryEntries.Any())
                     return Results.BadRequest("Songs and history entries cannot be empty.");
 
-                if (songDbContext.UpvotedSongs.Where(x => x.UserId == u.UserId).Any())
+                if (songDbContext.UpvotedSongs.Where(x => x.UserId == authedUser.UserId).Any())
                     return Results.Conflict("User already has upvoted those songs in the database.");
 
-                if (songDbContext.SongHistoryEntries.Where(h => h.UserId == u.UserId).Any())
+                if (songDbContext.SongHistoryEntries.Where(h => h.UserId == authedUser.UserId).Any())
                     return Results.Conflict("User already has history entries in the database.");
 
-                songDbContext.UpvotedSongs.AddRange(request.songs);
-                songDbContext.SongHistoryEntries.AddRange(request.historyEntries);
+                songDbContext.UpvotedSongs.AddRange(request.Songs);
+                songDbContext.SongHistoryEntries.AddRange(request.HistoryEntries);
                 songDbContext.SaveChanges();
 
                 return Results.Ok();
@@ -78,12 +78,12 @@ public static class MusicPlayerSyncEndpointsV1
             [FromServices] SongDbContext songDbContext,
             HttpClient httpClient) =>
         {
-            return auth?.GetUser(authTokenHeader, httpClient, u =>
+            return auth?.GetUser(authTokenHeader, httpClient, authedUser =>
             {
-                var songs = songDbContext.UpvotedSongs.Where(s => s.UserId == u.UserId).ToArray();
-                var historyEntries = songDbContext.SongHistoryEntries.Where(h => h.UserId == u.UserId).ToArray();
+                var songs = songDbContext.UpvotedSongs.Where(s => s.UserId == authedUser.UserId).ToArray();
+                var historyEntries = songDbContext.SongHistoryEntries.Where(h => h.UserId == authedUser.UserId).ToArray();
 
-                return Results.Ok(new SyncPullResult([u], songs, historyEntries));
+                return Results.Ok(new SyncPullResponse(authedUser, songs, historyEntries));
             });
         });
 
@@ -94,9 +94,9 @@ public static class MusicPlayerSyncEndpointsV1
             [FromServices] SongDbContext songDbContext,
             HttpClient httpClient) =>
         {
-            return auth?.GetUser(authTokenHeader, httpClient, u =>
+            return auth?.GetUser(authTokenHeader, httpClient, authedUser =>
             {
-                song.UserId = u.UserId;
+                song.UserId = authedUser.UserId;
                 song.DateAdded = song.DateAdded?.UtcDateTime;
 
                 if (songDbContext.UpvotedSongs.Where(x => x.SongId == song.SongId).Any())
@@ -116,9 +116,9 @@ public static class MusicPlayerSyncEndpointsV1
             [FromServices] SongDbContext songDbContext,
             HttpClient httpClient) =>
         {
-            return auth?.GetUser(authTokenHeader, httpClient, u =>
+            return auth?.GetUser(authTokenHeader, httpClient, authedUser =>
             {
-                entry.UserId = u.UserId;
+                entry.UserId = authedUser.UserId;
                 entry.Date = entry.Date.UtcDateTime;
                 if (songDbContext.SongHistoryEntries.Where(h => h.UserId == entry.UserId && h.SongId == entry.SongId && h.Date == entry.Date).Any())
                     return Results.Conflict();
@@ -159,12 +159,12 @@ public static class MusicPlayerSyncEndpointsV1
             [FromServices] SongDbContext songDbContext,
             HttpClient httpClient) =>
         {
-            return auth?.GetUser(authTokenHeader, httpClient, u =>
+            return auth?.GetUser(authTokenHeader, httpClient, authedUser =>
             {
                 if (request.NewVolume <= 0)
                     return Results.BadRequest("Volume must be positive.");
 
-                var song = songDbContext.UpvotedSongs.FirstOrDefault(s => s.UserId == u.UserId && s.SongId == request.SongId);
+                var song = songDbContext.UpvotedSongs.FirstOrDefault(s => s.UserId == authedUser.UserId && s.SongId == request.SongId);
                 if (song == null)
                     return Results.NotFound();
 
