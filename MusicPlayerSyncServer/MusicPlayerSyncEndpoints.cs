@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
 using MusicPlayerSyncInterface.DTOs;
+using MusicPlayerSyncInterface.DTOs.Composites;
 using MusicPlayerSyncServer.Database;
 using MusicPlayerSyncServer.Services.Auth;
 
@@ -14,9 +15,11 @@ namespace MusicPlayerSyncServer;
 
 public static class MusicPlayerSyncEndpoints
 {
+    static string routeVersionPrefix = "/v1";
+
     public static void RegisterNotesEndpoints(this IEndpointRouteBuilder routes, IServiceProvider services)
     {
-        routes.MapGet("/authBackend", (
+        routes.MapGet($"{routeVersionPrefix}/authBackend", (
            IOptions<AuthOptions> authOptions) =>
         {
             return Results.Ok(new EzAuthAddress
@@ -26,7 +29,7 @@ public static class MusicPlayerSyncEndpoints
             });
         });
 
-        routes.MapPost("/sync/init", (
+        routes.MapPost($"{routeVersionPrefix}/sync/init", (
             [FromHeader(Name = "Authorization")] string? authTokenHeader,
             [FromBody] UserSongDataAndHistory request,
             [FromServices] AuthService auth,
@@ -67,7 +70,7 @@ public static class MusicPlayerSyncEndpoints
             });
         });
 
-        routes.MapGet("/sync/pull", (
+        routes.MapGet($"{routeVersionPrefix}/sync/pull", (
             [FromHeader(Name = "Authorization")] string? authTokenHeader,
             [FromServices] AuthService auth,
             [FromServices] SongDbContext songDbContext,
@@ -82,7 +85,7 @@ public static class MusicPlayerSyncEndpoints
             });
         });
 
-        routes.MapPost("/sync/new-song", (
+        routes.MapPost($"{routeVersionPrefix}/sync/new-song", (
             [FromHeader(Name = "Authorization")] string? authTokenHeader,
             [FromBody] UpvotedSong song,
             [FromServices] AuthService auth,
@@ -104,7 +107,7 @@ public static class MusicPlayerSyncEndpoints
             });
         });
 
-        routes.MapPost("/sync/vote", (
+        routes.MapPost($"{routeVersionPrefix}/sync/vote", (
             [FromHeader(Name = "Authorization")] string? authTokenHeader,
             [FromBody] SongHistoryEntry entry,
             [FromServices] AuthService auth,
@@ -141,6 +144,29 @@ public static class MusicPlayerSyncEndpoints
                 }
 
                 songDbContext.SongHistoryEntries.Add(entry);
+                songDbContext.SaveChanges();
+
+                return Results.Ok();
+            });
+        });
+
+        routes.MapPut($"{routeVersionPrefix}/sync/volume", (
+            [FromHeader(Name = "Authorization")] string? authTokenHeader,
+            [FromBody] UpdateVolumeRequest request,
+            [FromServices] AuthService auth,
+            [FromServices] SongDbContext songDbContext,
+            HttpClient httpClient) =>
+        {
+            return auth?.GetUser(authTokenHeader, httpClient, u =>
+            {
+                if (request.NewVolume <= 0)
+                    return Results.BadRequest("Volume must be positive.");
+
+                var song = songDbContext.UpvotedSongs.FirstOrDefault(s => s.UserId == u.UserId && s.SongId == request.SongId);
+                if (song == null)
+                    return Results.NotFound();
+
+                song.Volume = request.NewVolume;
                 songDbContext.SaveChanges();
 
                 return Results.Ok();
