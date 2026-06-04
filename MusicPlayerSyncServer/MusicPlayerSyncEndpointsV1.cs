@@ -13,13 +13,15 @@ using MusicPlayerSyncServer.Services.Auth;
 
 namespace MusicPlayerSyncServer;
 
-public static class MusicPlayerSyncEndpoints
+public static class MusicPlayerSyncEndpointsV1
 {
     const string ROUTE_VERSION_PREFIX = "/v1";
 
-    public static void RegisterNotesEndpoints(this IEndpointRouteBuilder routes, IServiceProvider services)
+    public static void RegisterNotesEndpointsV1(this IEndpointRouteBuilder routes, IServiceProvider services)
     {
-        routes.MapGet($"{ROUTE_VERSION_PREFIX}/authBackend", (
+        var version1Api = routes.MapGroup(ROUTE_VERSION_PREFIX);
+
+        version1Api.MapGet($"/authBackend", (
            IOptions<AuthOptions> authOptions) =>
         {
             return Results.Ok(new EzAuthAddress
@@ -29,7 +31,7 @@ public static class MusicPlayerSyncEndpoints
             });
         });
 
-        routes.MapPost($"{ROUTE_VERSION_PREFIX}/sync/init", (
+        version1Api.MapPost($"/sync/init", (
             [FromHeader(Name = "Authorization")] string? authTokenHeader,
             [FromBody] SyncInitRequest request,
             [FromServices] AuthService auth,
@@ -70,7 +72,7 @@ public static class MusicPlayerSyncEndpoints
             });
         });
 
-        routes.MapGet($"{ROUTE_VERSION_PREFIX}/sync/pull", (
+        version1Api.MapGet($"/sync/pull", (
             [FromHeader(Name = "Authorization")] string? authTokenHeader,
             [FromServices] AuthService auth,
             [FromServices] SongDbContext songDbContext,
@@ -85,7 +87,7 @@ public static class MusicPlayerSyncEndpoints
             });
         });
 
-        routes.MapPost($"{ROUTE_VERSION_PREFIX}/sync/new-song", (
+        version1Api.MapPost($"/sync/new-song", (
             [FromHeader(Name = "Authorization")] string? authTokenHeader,
             [FromBody] UpvotedSong song,
             [FromServices] AuthService auth,
@@ -107,7 +109,7 @@ public static class MusicPlayerSyncEndpoints
             });
         });
 
-        routes.MapPost($"{ROUTE_VERSION_PREFIX}/sync/vote", (
+        version1Api.MapPost($"/sync/vote", (
             [FromHeader(Name = "Authorization")] string? authTokenHeader,
             [FromBody] SongHistoryEntry entry,
             [FromServices] AuthService auth,
@@ -150,7 +152,7 @@ public static class MusicPlayerSyncEndpoints
             });
         });
 
-        routes.MapPut($"{ROUTE_VERSION_PREFIX}/sync/volume", (
+        version1Api.MapPut($"/sync/volume", (
             [FromHeader(Name = "Authorization")] string? authTokenHeader,
             [FromBody] UpdateVolumeRequest request,
             [FromServices] AuthService auth,

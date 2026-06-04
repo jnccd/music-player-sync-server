@@ -12,5 +12,5 @@ builder.RegisterServices();
 var app = builder.Build();
 app.RegisterMiddlewares();
 app.ConfigureWebApp();
-app.RegisterNotesEndpoints(app.Services);
+app.RegisterNotesEndpointsV1(app.Services);
 app.Run();
