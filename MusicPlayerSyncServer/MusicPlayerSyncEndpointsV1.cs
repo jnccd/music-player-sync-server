@@ -199,8 +199,37 @@ public static class MusicPlayerSyncEndpointsV1
                 if (songDbContext.UpvotedSongs.Where(x => x.SongId == song.SongId).Any())
                     return Results.Conflict();
 
-                songDbContext.UpvotedSongs.Add(song);
-                songDbContext.SaveChanges();
+                // A song is identified by its file name plus album/artist tags, per user. If the same
+                // song already exists (e.g. another client of this account registered the same file, or
+                // a client that was offline retries an upload that already went through), reject the new
+                // upload and return the existing row as the body, so clients can remap queued data
+                // (votes etc.) that still refers to their own SongId of this song.
+                UpvotedSong? alreadyExisting = songDbContext.UpvotedSongs.FirstOrDefault(x =>
+                    x.UserId == song.UserId && x.Name == song.Name && x.Artist == song.Artist && x.Album == song.Album);
+                if (alreadyExisting != null)
+                {
+                    Console.WriteLine($"Rejected duplicate upvotedSong upload \"{song.Name}\" (artist: {song.Artist}, album: {song.Album}) for user {song.UserId} - already exists as {alreadyExisting.SongId}.");
+                    return Results.Json(alreadyExisting, statusCode: StatusCodes.Status409Conflict);
+                }
+
+                try
+                {
+                    songDbContext.UpvotedSongs.Add(song);
+                    songDbContext.SaveChanges();
+                }
+                catch (DbUpdateException ex)
+                {
+                    // Two clients raced and both inserted the same song (only possible while the unique
+                    // index is missing): treat it like the duplicate check above instead of failing hard,
+                    // so the loser remaps to the row of the winner.
+                    Console.WriteLine($"Duplicate upvotedSong upload \"{song.Name}\" raced with another insert ({ex.Message}).");
+                    alreadyExisting = songDbContext.UpvotedSongs.FirstOrDefault(x =>
+                        x.UserId == song.UserId && x.Name == song.Name && x.Artist == song.Artist && x.Album == song.Album);
+                    if (alreadyExisting != null)
+                        return Results.Json(alreadyExisting, statusCode: StatusCodes.Status409Conflict);
+                    Console.WriteLine($"Failed to save upvotedSong upload \"{song.Name}\": {ex}");
+                    return Results.Problem("Failed to save the song. Please try again.");
+                }
 
                 return Results.Ok();
             });
