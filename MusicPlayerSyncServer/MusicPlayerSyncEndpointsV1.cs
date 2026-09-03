@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using MusicPlayerSyncInterface;
 using MusicPlayerSyncInterface.DTOs;
 using MusicPlayerSyncInterface.DTOs.Composites;
 using MusicPlayerSyncServer.Database;
@@ -206,6 +207,23 @@ public static class MusicPlayerSyncEndpointsV1
                 // (votes etc.) that still refers to their own SongId of this song.
                 UpvotedSong? alreadyExisting = songDbContext.UpvotedSongs.FirstOrDefault(x =>
                     x.UserId == song.UserId && x.Name == song.Name && x.Artist == song.Artist && x.Album == song.Album);
+                if (alreadyExisting == null && SongFileMatching.HasNoAlbumOrArtist(song.Artist, song.Album))
+                {
+                    // The upload carries no album/artist metadata, so it cannot be matched by its exact
+                    // tags. If rows of the same file name already exist and all of them share ONE tag
+                    // signature, this upload is almost certainly that same song registered without its
+                    // tags (older clients did not read tags from the file) - treat it as a duplicate so
+                    // no second, metadata-less row is created. When rows of several different signatures
+                    // share the file name, the upload could be another song and is accepted.
+                    var sameNameRows = songDbContext.UpvotedSongs
+                        .Where(x => x.UserId == song.UserId && x.Name == song.Name)
+                        .ToArray(); // Materialize first: SongFileMatching is not translatable to SQL
+                    var sameNameTaggedRows = sameNameRows
+                        .Where(x => !SongFileMatching.HasNoAlbumOrArtist(x.Artist, x.Album))
+                        .ToArray();
+                    if (sameNameTaggedRows.Length > 0 && sameNameTaggedRows.Select(x => (x.Artist, x.Album)).Distinct().Count() == 1)
+                        alreadyExisting = sameNameTaggedRows.First();
+                }
                 if (alreadyExisting != null)
                 {
                     Console.WriteLine($"Rejected duplicate upvotedSong upload \"{song.Name}\" (artist: {song.Artist}, album: {song.Album}) for user {song.UserId} - already exists as {alreadyExisting.SongId}.");
