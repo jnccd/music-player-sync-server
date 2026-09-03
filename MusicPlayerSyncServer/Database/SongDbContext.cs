@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Reflection;
 using Microsoft.EntityFrameworkCore;
@@ -12,11 +12,31 @@ public class SongDbContext : DbContext
     public DbSet<User> Users { get; set; }
     public DbSet<UpvotedSong> UpvotedSongs { get; set; }
     public DbSet<SongHistoryEntry> SongHistoryEntries { get; set; }
+    public DbSet<SongLibraryMigration> SongLibraryMigrations { get; set; }
 
     public SongDbContext(DbContextOptions<SongDbContext> options)
         : base(options) { }
 
-    protected override void OnModelCreating(ModelBuilder modelBuilder) => MusicPlayerSyncInterface.Database.Model.OnModelCreating(modelBuilder);
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        MusicPlayerSyncInterface.Database.Model.OnModelCreating(modelBuilder);
+
+        // The SongLibraryMigration table only exists on the server. The clients track the migration state
+        // with a ".song-library.music-player-config" file in their song library instead of a local db table,
+        // which is why this entity is not part of the shared MusicPlayerSyncInterface.Database.Model.
+        modelBuilder.Entity<SongLibraryMigration>(migration =>
+        {
+            migration.HasKey(x => x.MigrationId);
+            migration.HasOne<User>()
+                .WithMany()
+                .HasForeignKey(x => x.UserId)
+                .OnDelete(DeleteBehavior.NoAction);
+            migration.HasIndex(x => new { x.UserId, x.MigrationNumber })
+                .IsUnique();
+            migration.Property(x => x.MigrationType)
+                .HasConversion<string>();
+        });
+    }
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
     {

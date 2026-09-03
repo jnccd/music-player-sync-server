@@ -1,10 +1,11 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 using EzAuth;
 using EzAuth.Interfaces;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using MusicPlayerSyncInterface.DTOs;
 using MusicPlayerSyncInterface.DTOs.Composites;
@@ -82,8 +83,104 @@ public static class MusicPlayerSyncEndpointsV1
             {
                 var songs = songDbContext.UpvotedSongs.Where(s => s.UserId == authedUser.UserId).ToArray();
                 var historyEntries = songDbContext.SongHistoryEntries.Where(h => h.UserId == authedUser.UserId).ToArray();
+                var migrations = songDbContext.SongLibraryMigrations.Where(m => m.UserId == authedUser.UserId).OrderBy(m => m.MigrationNumber).ToArray();
 
-                return Results.Ok(new SyncPullResponse(authedUser, songs, historyEntries));
+                return Results.Ok(new SyncPullResponse(authedUser, songs, historyEntries, migrations));
+            });
+        });
+
+        version1Api.MapPost($"/sync/song-library-migration", (
+            [FromHeader(Name = "Authorization")] string? authTokenHeader,
+            [FromBody] SongLibraryMigration migration,
+            [FromServices] AuthService auth,
+            [FromServices] SongDbContext songDbContext,
+            HttpClient httpClient) =>
+        {
+            return auth?.GetUser(authTokenHeader, httpClient, authedUser =>
+            {
+                migration.UserId = authedUser.UserId;
+
+                if (string.IsNullOrWhiteSpace(migration.OldName))
+                    return Results.BadRequest("OldName must not be empty.");
+                if (migration.SongId == Guid.Empty)
+                    return Results.BadRequest("SongId must not be empty.");
+                if (migration.MigrationType != SongLibraryMigrationType.Rename && migration.MigrationType != SongLibraryMigrationType.Delete)
+                    return Results.BadRequest($"Unknown migration type {migration.MigrationType}.");
+                if (migration.MigrationType == SongLibraryMigrationType.Rename)
+                {
+                    if (string.IsNullOrWhiteSpace(migration.NewName))
+                        return Results.BadRequest("NewName must not be empty for a Rename migration.");
+                    if (migration.OldName == migration.NewName)
+                        return Results.BadRequest("OldName and NewName must differ.");
+                }
+
+                // Retried requests (same MigrationId, e.g. after a lost response) just return the already created migration.
+                var existingMigration = songDbContext.SongLibraryMigrations.FirstOrDefault(m => m.UserId == migration.UserId && m.MigrationId == migration.MigrationId);
+                if (existingMigration != null)
+                    return Results.Ok(existingMigration);
+
+                // A migration always refers to one specific UpvotedSong entry (see SongLibraryMigration.SongId).
+                // The entry has to exist and still carry the old file name; otherwise the migration is refused,
+                // e.g. when the song entry was never synced to the server yet.
+                var upvotedSong = songDbContext.UpvotedSongs.FirstOrDefault(s => s.UserId == migration.UserId && s.SongId == migration.SongId);
+                if (upvotedSong == null)
+                    return Results.Conflict("The song entry this migration refers to does not exist on the server (yet). Make sure the song was synced and try again.");
+                if (upvotedSong.Name != migration.OldName)
+                    return Results.Conflict($"The song entry this migration refers to currently has the name \"{upvotedSong.Name}\", not \"{migration.OldName}\".");
+
+                // Snapshot the entries album/artist into the migration. A file rename or delete does not change
+                // the tags of the song file, so clients can use the snapshot to identify the files that really
+                // belong to this entry (a file with the same name but different tags is a different song).
+                migration.Artist = upvotedSong.Artist;
+                migration.Album = upvotedSong.Album;
+
+                // Apply the actual song library change to that entry here: a rename changes the entries file
+                // name, a delete removes the entry (and with it its history entries, via the database cascade).
+                // Only if that succeeded (and only then) is the migration itself committed.
+                if (migration.MigrationType == SongLibraryMigrationType.Rename)
+                {
+                    var clashingSong = songDbContext.UpvotedSongs.FirstOrDefault(s =>
+                        s.UserId == migration.UserId && s.SongId != upvotedSong.SongId && s.Name == migration.NewName && s.Artist == upvotedSong.Artist && s.Album == upvotedSong.Album);
+                    if (clashingSong != null)
+                        return Results.Conflict($"A song with the name {migration.NewName} already exists (artist: {upvotedSong.Artist}, album: {upvotedSong.Album}).");
+
+                    upvotedSong.Name = migration.NewName;
+                }
+                else if (migration.MigrationType == SongLibraryMigrationType.Delete)
+                {
+                    // Delete migrations only carry an OldName. The NewName column is not nullable, so store an empty string.
+                    migration.NewName = "";
+                    songDbContext.UpvotedSongs.Remove(upvotedSong);
+                }
+
+                // Assign the next migration number for this user (per-user stream). The unique index on
+                // (UserId, MigrationNumber) guards against two clients racing, in which case we simply
+                // recompute the number and try again (SaveChanges runs in a transaction, so a failed
+                // attempt has no side effects).
+                songDbContext.SongLibraryMigrations.Add(migration);
+                for (int attempt = 0; ; attempt++)
+                {
+                    migration.MigrationNumber = (songDbContext.SongLibraryMigrations
+                        .Where(m => m.UserId == migration.UserId)
+                        .Max(m => (int?)m.MigrationNumber) ?? 0) + 1;
+
+                    try
+                    {
+                        songDbContext.SaveChanges();
+                        break;
+                    }
+                    catch (DbUpdateException ex) when (attempt < 2)
+                    {
+                        Console.WriteLine($"Migration number collision for user {migration.UserId}, retrying ({ex.Message})");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to save song library migration for user {migration.UserId}: {ex}");
+                        return Results.Problem("Failed to save song library migration. Please try again.");
+                    }
+                }
+
+                return Results.Ok(migration);
             });
         });
 
