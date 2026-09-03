@@ -83,12 +83,16 @@ public static class UpvotedSongDeduplicator
 
         // Drop the history entries of the merged-away rows with them (the kept row keeps its own
         // history). Removed explicitly so the outcome does not depend on the database cascade.
-        Guid[] removedIds = remove.Select(entry => entry.SongId).ToArray();
-        var orphanedHistory = songDbContext.SongHistoryEntries
-            .Where(h => h.SongId != null && removedIds.Contains(h.SongId.Value))
-            .ToArray();
-        if (orphanedHistory.Length > 0)
-            songDbContext.SongHistoryEntries.RemoveRange(orphanedHistory);
+        // Queried per row: EF Core 8 on .NET 10 cannot parameterize "array.Contains(...)" in a query
+        // (it tries to compile a ReadOnlySpan closure and throws), so the ids are compared one by one.
+        foreach (UpvotedSong removed in remove)
+        {
+            var orphanedHistory = songDbContext.SongHistoryEntries
+                .Where(h => h.SongId == removed.SongId)
+                .ToArray();
+            if (orphanedHistory.Length > 0)
+                songDbContext.SongHistoryEntries.RemoveRange(orphanedHistory);
+        }
 
         songDbContext.UpvotedSongs.RemoveRange(remove);
 
