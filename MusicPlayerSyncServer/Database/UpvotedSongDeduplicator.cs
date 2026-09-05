@@ -98,12 +98,13 @@ public static class UpvotedSongDeduplicator
             return;
 
         // A merge must not throw the votes of the merged-away rows away: their history entries are
-        // re-pointed onto the kept row (EF Core updates the (UserId, SongId, Date) key columns of the
-        // row in place; PostgreSQL supports that fine). Entries that collide with the kept row's own
-        // history (same account + same date) are the same listening event recorded twice and are
-        // dropped as duplicates. The kept row's counters (score/streak/likes/dislikes) are left
-        // UNTOUCHED: they are the accumulated values of the row with the most data and may include
-        // votes from times before history entries were recorded, so they are never recomputed.
+        // re-pointed onto the kept row. EF Core cannot modify a key property (UserId, SongId) of a
+        // tracked entity in place, so each moved entry is re-created under the kept row's key (delete +
+        // re-add in the same SaveChanges). Entries that collide with the kept row's own history (same
+        // account + same date) are the same listening event recorded twice and are dropped as
+        // duplicates. The kept row's counters (score/streak/likes/dislikes) are left UNTOUCHED: they
+        // are the accumulated values of the row with the most data and may include votes from times
+        // before history entries were recorded, so they are never recomputed.
         // Queried per row: EF Core 8 on .NET 10 cannot parameterize "array.Contains(...)" in a query
         // (it tries to compile a ReadOnlySpan closure and throws), so ids are compared one by one.
         var keepDates = new HashSet<DateTimeOffset>(songDbContext.SongHistoryEntries
@@ -121,8 +122,8 @@ public static class UpvotedSongDeduplicator
             {
                 if (keepDates.Add(entry.Date))
                 {
-                    entry.UserId = keep.UserId;
-                    entry.SongId = keep.SongId;
+                    songDbContext.SongHistoryEntries.Remove(entry);
+                    songDbContext.SongHistoryEntries.Add(new SongHistoryEntry(keep.SongId, entry.ScoreChange, entry.Date, keep.UserId));
                     movedHistory++;
                 }
                 else

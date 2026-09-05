@@ -74,8 +74,11 @@ matching agree on one definition.
 volume — they are **never recomputed from history** (scores can predate the history entries, so a
 replay would lose data). The merged-away rows are removed, but their `SongHistoryEntry` rows are
 **re-pointed onto the kept row** for the record (entries colliding with the kept row's history — same
-account + same date — are the same listening event recorded twice and dropped). Only the registration
-date is additionally blended into `Keep`:
+account + same date — are the same listening event recorded twice and dropped). Because EF Core cannot
+modify the `(UserId, SongId, Date)` key of a tracked entity in place, each moved entry is re-created
+under the kept row's key (delete + re-add in one `SaveChanges`); the history moves are persisted
+before the song-row deletions so no database cascade can remove them. Only the registration date is
+additionally blended into `Keep`:
 
 * `DateAdded` = oldest date of the group (null stays null).
 
