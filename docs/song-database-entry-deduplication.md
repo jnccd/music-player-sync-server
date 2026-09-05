@@ -42,7 +42,7 @@ for a long time.
 | Idea | Meaning |
 |---|---|
 | **One song = one `(account, file name, album, artists)`** | This is the identity used everywhere: the unique DB index, the dedupe checks, the merge groups, and file matching. |
-| **Merge = keep one canonical row, drop the rest** | The kept row wins by a deterministic rule (see §3); the dropped rows (and their history entries) are deleted. Timeless facts (oldest `DateAdded`, loudest `Volume`) are blended into the kept row. |
+| **Merge = keep one canonical row, drop the rest** | The kept row is chosen by a deterministic rule that **never discards user-built data** (see §3). Its counters (score/likes/dislikes/streak/volume) stay **untouched** — they are the accumulated values of the row with the most data and may predate the history entries. The merged-away rows' `SongHistoryEntry` rows are **re-pointed onto the kept row** for the record (same-date duplicates dropped); only the oldest registration date is blended into the kept row, and mp3 metadata is copied onto it when the kept row was the data-carrying metadata-less one. |
 | **Prevent at the server** | `/sync/new-song` rejects a second row of the same identity and returns the existing row as the **409 body**, so clients can remap queued data to it. |
 | **Heal what slipped through** | The server merges duplicates of both flavors at **startup** (idempotent); clients merge again **after every pull**, so even an un-healed older server converges locally. |
 | **Match must never throw** | `ResolveUpvotedSongEntry` never raises on duplicates anymore: same-name+same-tags rows resolve to the canonical row deterministically; a file whose tags no row carries is simply "not registered". |
@@ -57,19 +57,41 @@ matching agree on one definition.
 
 **Canonical selection** (`ChooseCanonicalEntry`) orders candidate rows:
 
-1. rows whose stored tags **exactly match the arbitrating file** win first (only when file tags were
-   given — a metadata-less row can never *prove* it is the file);
-2. synced rows (`UserId != ""`) over purely local rows (`UserId == ""`);
-3. higher `Score` (the user-facing rule: "highest score wins");
-4. older `DateAdded` (non-null before null);
-5. smaller `SongId` (fully deterministic last resort).
+1. rows carrying **user-built song data** (`CarriesSongData`: score, likes/dislikes, streak, analyzed
+   volume) win over rows without it — that data is accumulated from user input over time and cannot be
+   recreated, while metadata can be copied onto the winner afterwards. *(Without this rule a fresh
+   tagged-but-empty row would win over the old metadata-less row that holds the real listening
+   history — exactly the data loss the feature must prevent.)*
+2. among data-carrying rows: more votes first, then the bigger streak, then an analyzed volume;
+3. among rows **without** data: rows whose stored tags exactly match the arbitrating file win first
+   (only when file tags were given), so fresh duplicates keep the properly tagged entry;
+4. synced rows (`UserId != ""`) over purely local rows (`UserId == ""`);
+5. higher `Score`;
+6. older `DateAdded` (non-null before null);
+7. smaller `SongId` (fully deterministic last resort).
 
-**Merge** (`MergeSameSongEntries`): returns `(Keep, Remove)`. The kept row keeps its own counters
-(score/streak/likes/dislikes) — the loser's history is dropped with it (deliberate policy, chosen by
-the user; nothing is summed). Only the timeless facts are blended into `Keep`:
+**Merge** (`MergeSameSongEntries`): returns `(Keep, Remove)`. The kept row keeps its own counters and
+volume — they are **never recomputed from history** (scores can predate the history entries, so a
+replay would lose data). The merged-away rows are removed, but their `SongHistoryEntry` rows are
+**re-pointed onto the kept row** for the record (entries colliding with the kept row's history — same
+account + same date — are the same listening event recorded twice and dropped). Only the registration
+date is additionally blended into `Keep`:
 
-* `DateAdded` = oldest date of the group,
-* `Volume` = highest (loudest) of the group (`-1` means "not analyzed yet").
+* `DateAdded` = oldest date of the group (null stays null).
+
+`Volume` deliberately keeps the canonical row's own value: it is a per-file measurement of the very
+song, not cumulative user data, so there is nothing to merge — the kept (data-carrying) row's volume
+is the right one. Because the counters are kept as-is while extra history rows may be moved onto the
+row, the history can intentionally contain more events than the counters sum up to (votes from merged
+rows, or from before history recording existed) — that is by design: the counters are the
+authoritative accumulated state, the history is the (best-effort) record.
+
+**Metadata adoption** (`TryGetTagsToAdoptOnto`): when the kept row is the metadata-less one (it won
+because it carries the song data) and another row of the group carries the album/artist of the
+arbitrating file, the merge **adopts that metadata onto the kept row** — the metadata ends up "where
+it belongs" and the data row survives. Adopting happens *after* the tagged loser row was removed and
+saved (the caller first drops the loser, then updates the kept row), so the adoption can never collide
+with the loser's unique `(name, artist, album)` identity.
 
 ## 4. Data model & durable state
 
@@ -103,7 +125,8 @@ music-player-sync-server
 ├── MusicPlayerSyncServer/MusicPlayerSyncEndpointsV1.cs   /v1/sync/new-song dedupe (409 + canonical row),
 │                                                         incl. metadata-less upload absorption + race fallback
 ├── MusicPlayerSyncServer/Database/UpvotedSongDeduplicator.cs   startup heal: two-pass merge per user,
-│                                                         removes loser history, ensures unique index
+│                                                         moves loser history onto the kept row,
+│                                                         keeps counters, ensures unique index
 └── MusicPlayerSyncServer/Program.cs     runs the heal + index ensure at every startup (log line)
 
 music-player-dxmg-port (older client)
@@ -308,13 +331,20 @@ All in `MusicPlayerSyncEndpointsV1.cs` → `POST /v1/sync/new-song`:
 
 `Database/UpvotedSongDeduplicator.cs` (startup, via `Program.cs`):
 
-* **Pass 1 — exact duplicates**: group by `(UserId, Name, Artist, Album)`, keep canonical, delete the
-  rest including their `SongHistoryEntries` (explicitly, not via cascade).
+* **Pass 1 — exact duplicates**: group by `(UserId, Name, Artist, Album)`, keep canonical, remove the
+  rest. Their `SongHistoryEntry` rows are **re-pointed onto the kept row** (same-account + same-date
+  entries are the same listening event recorded twice and are dropped). The history moves are saved
+  BEFORE the rows are deleted, so the database cascade can never remove them. The kept row's counters
+  are left untouched — they are the accumulated values of the row with the most data and can predate
+  the history entries.
 * **Pass 2 — tag-completeness duplicates**: group by `(UserId, Name)`; when all *tagged* rows of the
-  name share one tag signature, absorb metadata-less rows into the tagged one. Genuinely different
-  same-named songs carry different signatures and are never merged.
+  name share one tag signature, merge the rows keeping the **data-carrying** canonical row (score/
+  history always survives; the merged-away row's history is moved onto it the same way) and adopt the
+  file's metadata onto it if the kept row was the metadata-less one. Genuinely different same-named
+  songs carry different signatures and are never merged.
 * Then ensure the unique index exists (`CREATE UNIQUE INDEX IF NOT EXISTS …`, works on PostgreSQL and
-  SQLite). Idempotent; logs `Healed N duplicate …` or a no-op message.
+  SQLite). Idempotent; logs `Healed N duplicate …` (incl. how many history entries were moved) or a
+  no-op message.
 
 ## 9. Client implementations — where the logic sits (Avalonia)
 
@@ -357,17 +387,28 @@ machinery to DXMG would follow the same lifecycle if ever wanted.
 
 ## 11. Intentional semantics & known limitations
 
-* **The losing row's history is dropped, not summed** (deliberate user choice: "highest score wins").
-  A flavor-2 loser that accumulated a few votes loses them.
+* **The row with user data always wins and keeps it.** Canonical selection is data-first (see §3): a
+  metadata-less row that accumulated score/likes/dislikes/streak/volume over time survives a merge
+  against a fresh tagged-but-empty row, the mp3 metadata is adopted onto it, and its counters stay
+  untouched. The merged-away row's history entries are re-pointed onto it for the record (only
+  genuinely identical *duplicate* listening events — same account + same date recorded on two rows of
+  the same song — are discarded).
 * The server heal and the client merge only join rows **they can prove** are the same song; rows that
   differ in *both* tags (genuinely different same-named songs) are never merged.
-* A flavor-2 pair that lives only on the **server** (a tag-less server row created by an old client,
-  next to a tagged row of another client) is not merged server-side without files; clients absorb it
-  during their post-pull merge, so it stays invisible in practice.
+* **Why a pull can still report "Merged N … duplicate(s)" repeatedly:** the post-pull merge runs on the
+  rows the *server* delivered. If the server still holds the legacy flavor-2 pairs (tag-less rows
+  uploaded by old clients), every pull re-delivers them and the local merge absorbs them again. The
+  fix is server-side: restart the sync server with the heal (`UpvotedSongDeduplicator`, pass 2 merges
+  single-signature flavor-2 pairs and adopts the metadata onto the data-carrying row). Once the heal
+  ran, the pairs are gone from the server and the merges stop. Nothing in the client worker recreates
+  them.
 * Votes/volume changes queued against a song before its lazy upload finished can 404 once; they stay
   queued and are synced on the next startup retry (not lost).
 * Files whose tags change on disk can effectively become "new" songs from the DB's point of view
   (tags are part of the identity) — pre-existing behavior, unchanged.
+* Metadata-less rows are **legitimate**: several songs intentionally carry no album/artist (old clients
+  pruned metadata that was redundant with the file name). Such rows are never touched unless the same
+  file name also has a provably identical (single-signature) tagged row.
 
 ## 12. Incidental fixes made along the way (worth knowing when debugging)
 
@@ -384,6 +425,10 @@ machinery to DXMG would follow the same lifecycle if ever wanted.
   duplicate group; the merge now enumerates the library once into a name→files map.
 * Per-file resolution used to load the whole user's rows from SQLite per file; it now filters by file
   name in SQL and returns immediately for 0/1 rows.
+* Startup "SongId  not found!" `InvalidDataException` traces came from visualization/volume/MPRIS code
+  querying the currently playing song's row while nothing was playing yet (or right after a pull
+  replaced the rows). Those consumers are now guarded (null/empty `SongId` → skip) and use the
+  tolerant `GetUpvotedSongByIdOrNull` lookup.
 * Parallel progress is a completion counter that is only ever raised under a lock — no wobble.
 
 ## 13. Deploying / operating notes
@@ -413,6 +458,10 @@ machinery to DXMG would follow the same lifecycle if ever wanted.
 | Background worker | `SongSyncService.ProcessPendingSongUploadsInBackground` |
 | Post-pull merge | `DbWrapperService.Context.MergeDuplicateUpvotedSongs` + `RewriteDatabase` |
 | Merge-safe tag persist | `DbWrapperService.Context.TryApplyTagsToSong` |
+| History re-point before row delete (server) | `UpvotedSongDeduplicator.RemoveRowsWithHistory` (counters kept) |
+| History re-point before row delete (client) | `DbWrapperService.Context.RemoveUpvotedSongRows(keep, remove)` (counters kept) |
+| Data-row detection / tag adoption helpers | `SongFileMatching.CarriesSongData`, `SongFileMatching.TryGetTagsToAdoptOnto` |
+| Data-carrying-row-aware canonical pick | `SongFileMatching.ChooseCanonicalEntry` (rules 1–7 in §3) |
 | Queued-entry redirect on 409 | `DbWrapperService.Context.RedirectQueuedEntriesToSong` |
 | Strict registration for ambiguous names | `SongVotingService.RegisterUpvotedSongWithTags` |
 | Parallel scan / ambiguous names / worker kick | `SongPlaybackService.UpdateAvailableSongPaths` |

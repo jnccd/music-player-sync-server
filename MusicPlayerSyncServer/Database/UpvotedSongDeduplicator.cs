@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using MusicPlayerSyncInterface;
@@ -42,11 +43,12 @@ public static class UpvotedSongDeduplicator
         {
             var (keep, remove) = SongFileMatching.MergeSameSongEntries(group);
             RemoveRowsWithHistory(songDbContext, keep, remove);
-            mergedAway += remove.Length;
+            if (remove.Length > 0)
+            {
+                mergedAway += remove.Length;
+                songDbContext.SaveChanges(); // Persist each group before the next one is processed
+            }
         }
-
-        if (mergedAway > 0)
-            songDbContext.SaveChanges(); // Persist pass 1, so pass 2 only sees the surviving rows
 
         // 2. Tag-completeness duplicates: same user and file name, metadata-less rows plus tagged rows.
         var tagCompletenessGroups = songDbContext.UpvotedSongs.ToArray()
@@ -62,16 +64,30 @@ public static class UpvotedSongDeduplicator
             if (tagSignatures.Length != 1)
                 continue; // Several differently tagged songs share the file name: a metadata-less row is ambiguous
 
-            // Absorb the metadata-less rows into the tagged row (it carries the tags of the song, so it
-            // wins the canonical spot over the metadata-less rows regardless of their score).
+            // Absorb the duplicate rows into one canonical row. The canonical row is chosen by
+            // SongFileMatching.MergeSameSongEntries: the row carrying the song data (score, likes/
+            // dislikes, streak, volume) ALWAYS wins - even when it is the metadata-less row - because
+            // that data is accumulated from user input over time and cannot be recreated. The file's
+            // metadata is adopted onto it AFTER the (possibly tagged) loser row was removed, so the
+            // adoption can never collide with the loser's identity.
             (string fileArtist, string fileAlbum) = tagSignatures[0];
             var (keep, remove) = SongFileMatching.MergeSameSongEntries(group, fileAlbum, fileArtist);
             RemoveRowsWithHistory(songDbContext, keep, remove);
+            if (remove.Length == 0)
+                continue;
             mergedAway += remove.Length;
-        }
+            songDbContext.SaveChanges(); // Drop the loser row(s) first (their identity is still taken)
 
-        if (mergedAway > 0)
-            songDbContext.SaveChanges();
+            if (SongFileMatching.TryGetTagsToAdoptOnto(keep, group, fileAlbum, fileArtist, out string adoptAlbum, out string adoptArtists))
+            {
+                // The data-carrying row was the metadata-less one: merge the metadata of the song onto
+                // it now that no row with that identity exists anymore.
+                keep.Artist = adoptArtists;
+                keep.Album = adoptAlbum;
+                songDbContext.SaveChanges();
+                Console.WriteLine($"Adopted metadata of \"{keep.Name}\" (artist: {keep.Artist}, album: {keep.Album}) onto data-carrying row {keep.SongId}.");
+            }
+        }
 
         return mergedAway;
     }
@@ -81,22 +97,50 @@ public static class UpvotedSongDeduplicator
         if (remove.Length == 0)
             return;
 
-        // Drop the history entries of the merged-away rows with them (the kept row keeps its own
-        // history). Removed explicitly so the outcome does not depend on the database cascade.
+        // A merge must not throw the votes of the merged-away rows away: their history entries are
+        // re-pointed onto the kept row (EF Core updates the (UserId, SongId, Date) key columns of the
+        // row in place; PostgreSQL supports that fine). Entries that collide with the kept row's own
+        // history (same account + same date) are the same listening event recorded twice and are
+        // dropped as duplicates. The kept row's counters (score/streak/likes/dislikes) are left
+        // UNTOUCHED: they are the accumulated values of the row with the most data and may include
+        // votes from times before history entries were recorded, so they are never recomputed.
         // Queried per row: EF Core 8 on .NET 10 cannot parameterize "array.Contains(...)" in a query
-        // (it tries to compile a ReadOnlySpan closure and throws), so the ids are compared one by one.
+        // (it tries to compile a ReadOnlySpan closure and throws), so ids are compared one by one.
+        var keepDates = new HashSet<DateTimeOffset>(songDbContext.SongHistoryEntries
+            .Where(h => h.UserId == keep.UserId && h.SongId == keep.SongId)
+            .Select(h => h.Date));
+
+        int movedHistory = 0;
+        int droppedDuplicateEntries = 0;
         foreach (UpvotedSong removed in remove)
         {
-            var orphanedHistory = songDbContext.SongHistoryEntries
+            var removedHistory = songDbContext.SongHistoryEntries
                 .Where(h => h.SongId == removed.SongId)
                 .ToArray();
-            if (orphanedHistory.Length > 0)
-                songDbContext.SongHistoryEntries.RemoveRange(orphanedHistory);
+            foreach (SongHistoryEntry entry in removedHistory)
+            {
+                if (keepDates.Add(entry.Date))
+                {
+                    entry.UserId = keep.UserId;
+                    entry.SongId = keep.SongId;
+                    movedHistory++;
+                }
+                else
+                {
+                    songDbContext.SongHistoryEntries.Remove(entry);
+                    droppedDuplicateEntries++;
+                }
+            }
         }
+
+        // Save the history moves BEFORE deleting the rows: PostgreSQL would otherwise cascade-delete
+        // the still-referencing history entries when the removed UpvotedSong rows go away.
+        if (movedHistory > 0 || droppedDuplicateEntries > 0)
+            songDbContext.SaveChanges();
 
         songDbContext.UpvotedSongs.RemoveRange(remove);
 
-        Console.WriteLine($"Healed duplicate rows of \"{keep.Name}\" (artist: {keep.Artist}, album: {keep.Album}, user: {keep.UserId}): kept {keep.SongId}, merged away {remove.Length} row(s) with their history.");
+        Console.WriteLine($"Healed duplicate rows of \"{keep.Name}\" (artist: {keep.Artist}, album: {keep.Album}, user: {keep.UserId}): kept {keep.SongId}, merged away {remove.Length} row(s); moved {movedHistory} history entr{(movedHistory == 1 ? "y" : "ies")} onto the kept row{(droppedDuplicateEntries > 0 ? $", dropped {droppedDuplicateEntries} duplicate history entr{(droppedDuplicateEntries == 1 ? "y" : "ies")} (same date)" : "")}.");
     }
 
     /// <summary>
