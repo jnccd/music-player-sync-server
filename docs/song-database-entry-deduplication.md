@@ -89,12 +89,17 @@ row, the history can intentionally contain more events than the counters sum up 
 rows, or from before history recording existed) — that is by design: the counters are the
 authoritative accumulated state, the history is the (best-effort) record.
 
-**Metadata adoption** (`TryGetTagsToAdoptOnto`): when the kept row is the metadata-less one (it won
-because it carries the song data) and another row of the group carries the album/artist of the
-arbitrating file, the merge **adopts that metadata onto the kept row** — the metadata ends up "where
-it belongs" and the data row survives. Adopting happens *after* the tagged loser row was removed and
-saved (the caller first drops the loser, then updates the kept row), so the adoption can never collide
-with the loser's unique `(name, artist, album)` identity.
+**Combined tags & metadata fill** (`TryGetCombinedTags`, `TryFillMissingTags`): rows of one song may
+differ by EMPTY tag fields — e.g. one client pruned an artist that only repeated the file name — so
+the group's tags are combined by ignoring empty fields. A merge is refused when two rows CONTRADICT
+each other (both carry a field with different non-empty values = genuinely different same-named
+songs), and additionally when two or more partially-tagged rows share NO common field ("artist only"
+vs "album only" rows could be different songs with complementary metadata; a fully metadata-less row
+is a catch-all and may merge with anything). When the kept row is missing a field (it won because it
+carries the song data), the merge **fills that empty field from the combined tags** — the metadata
+ends up "where it belongs" and the data row survives. Filling happens *after* the other rows were
+removed and saved (the caller first drops the losers, then updates the kept row), so it can never
+collide with a removed row's unique `(name, artist, album)` identity.
 
 ## 4. Data model & durable state
 
@@ -340,11 +345,12 @@ All in `MusicPlayerSyncEndpointsV1.cs` → `POST /v1/sync/new-song`:
   BEFORE the rows are deleted, so the database cascade can never remove them. The kept row's counters
   are left untouched — they are the accumulated values of the row with the most data and can predate
   the history entries.
-* **Pass 2 — tag-completeness duplicates**: group by `(UserId, Name)`; when all *tagged* rows of the
-  name share one tag signature, merge the rows keeping the **data-carrying** canonical row (score/
-  history always survives; the merged-away row's history is moved onto it the same way) and adopt the
-  file's metadata onto it if the kept row was the metadata-less one. Genuinely different same-named
-  songs carry different signatures and are never merged.
+* **Pass 2 — tag-completeness duplicates**: group by `(UserId, Name)`; merge when the tagged rows of
+  the name do not CONTRADICT each other (empty fields are ignored — a pruned artist/album must not
+  count as a different song), keeping the **data-carrying** canonical row (score/history always
+  survives; the merged-away row's history is moved onto it the same way) and filling the kept row's
+  empty metadata fields from the combined tags. Genuinely different same-named songs (contradicting
+  tags) are never merged.
 * Then ensure the unique index exists (`CREATE UNIQUE INDEX IF NOT EXISTS …`, works on PostgreSQL and
   SQLite). Idempotent; logs `Healed N duplicate …` (incl. how many history entries were moved) or a
   no-op message.
@@ -463,7 +469,7 @@ machinery to DXMG would follow the same lifecycle if ever wanted.
 | Merge-safe tag persist | `DbWrapperService.Context.TryApplyTagsToSong` |
 | History re-point before row delete (server) | `UpvotedSongDeduplicator.RemoveRowsWithHistory` (counters kept) |
 | History re-point before row delete (client) | `DbWrapperService.Context.RemoveUpvotedSongRows(keep, remove)` (counters kept) |
-| Data-row detection / tag adoption helpers | `SongFileMatching.CarriesSongData`, `SongFileMatching.TryGetTagsToAdoptOnto` |
+| Data-row detection / tag combining helpers | `SongFileMatching.CarriesSongData`, `TryGetCombinedTags`, `TryFillMissingTags` |
 | Data-carrying-row-aware canonical pick | `SongFileMatching.ChooseCanonicalEntry` (rules 1–7 in §3) |
 | Queued-entry redirect on 409 | `DbWrapperService.Context.RedirectQueuedEntriesToSong` |
 | Strict registration for ambiguous names | `SongVotingService.RegisterUpvotedSongWithTags` |

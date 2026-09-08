@@ -59,33 +59,31 @@ public static class UpvotedSongDeduplicator
             .ToArray();
         foreach (var group in tagCompletenessGroups)
         {
-            var taggedRows = group.Where(s => !SongFileMatching.HasNoAlbumOrArtist(s.Artist, s.Album)).ToArray();
-            var tagSignatures = taggedRows.Select(s => (s.Artist, s.Album)).Distinct().ToArray();
-            if (tagSignatures.Length != 1)
-                continue; // Several differently tagged songs share the file name: a metadata-less row is ambiguous
+            // The tagged rows of the name must not CONTRADICT each other (both carry a field with
+            // different non-empty values) for them to be one song; empty fields are ignored, since rows
+            // of one song can differ by a pruned artist/album on one of the clients.
+            if (!SongFileMatching.TryGetCombinedTags(group, out string combinedArtist, out string combinedAlbum))
+                continue; // Conflicting tags on the same file name: genuinely different songs
 
-            // Absorb the duplicate rows into one canonical row. The canonical row is chosen by
-            // SongFileMatching.MergeSameSongEntries: the row carrying the song data (score, likes/
-            // dislikes, streak, volume) ALWAYS wins - even when it is the metadata-less row - because
-            // that data is accumulated from user input over time and cannot be recreated. The file's
-            // metadata is adopted onto it AFTER the (possibly tagged) loser row was removed, so the
-            // adoption can never collide with the loser's identity.
-            (string fileArtist, string fileAlbum) = tagSignatures[0];
-            var (keep, remove) = SongFileMatching.MergeSameSongEntries(group, fileAlbum, fileArtist);
+            // Merge the rows keeping the **data-carrying** canonical row (score/history always
+            // survives; the merged-away row's history is moved onto it) and fill the empty tag fields
+            // of the kept row from the combined metadata AFTER the other row(s) were removed, so the
+            // fill can never collide with the loser's identity.
+            var (keep, remove) = SongFileMatching.MergeSameSongEntries(group, combinedAlbum, combinedArtist);
             RemoveRowsWithHistory(songDbContext, keep, remove);
             if (remove.Length == 0)
                 continue;
             mergedAway += remove.Length;
             songDbContext.SaveChanges(); // Drop the loser row(s) first (their identity is still taken)
 
-            if (SongFileMatching.TryGetTagsToAdoptOnto(keep, group, fileAlbum, fileArtist, out string adoptAlbum, out string adoptArtists))
+            if (SongFileMatching.TryFillMissingTags(keep, combinedAlbum, combinedArtist, out string? artistToSet, out string? albumToSet))
             {
-                // The data-carrying row was the metadata-less one: merge the metadata of the song onto
-                // it now that no row with that identity exists anymore.
-                keep.Artist = adoptArtists;
-                keep.Album = adoptAlbum;
+                if (artistToSet != null)
+                    keep.Artist = artistToSet;
+                if (albumToSet != null)
+                    keep.Album = albumToSet;
                 songDbContext.SaveChanges();
-                Console.WriteLine($"Adopted metadata of \"{keep.Name}\" (artist: {keep.Artist}, album: {keep.Album}) onto data-carrying row {keep.SongId}.");
+                Console.WriteLine($"Filled metadata of \"{keep.Name}\" (artist: {keep.Artist}, album: {keep.Album}) onto data-carrying row {keep.SongId}.");
             }
         }
 
