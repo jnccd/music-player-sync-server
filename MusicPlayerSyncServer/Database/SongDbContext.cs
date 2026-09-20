@@ -21,6 +21,17 @@ public class SongDbContext : DbContext
     {
         MusicPlayerSyncInterface.Database.Model.OnModelCreating(modelBuilder);
 
+        // The history sequence is a SERVER-ONLY shadow property (it does not exist on the shared DTO, so
+        // the client databases keep their schema unchanged): it is the cursor of the incremental history
+        // pull - clients store the highest sequence they received and ask for everything after it. It is
+        // assigned in application code (see SongHistorySequencer), which works identically on PostgreSQL
+        // and SQLite.
+        modelBuilder.Entity<SongHistoryEntry>(history =>
+        {
+            history.Property<long>("Sequence");
+            history.HasIndex("UserId", "Sequence");
+        });
+
         // The SongLibraryMigration table only exists on the server. The clients track the migration state
         // with a ".song-library.music-player-config" file in their song library instead of a local db table,
         // which is why this entity is not part of the shared MusicPlayerSyncInterface.Database.Model.

@@ -25,6 +25,9 @@ try
     var songDbContext = healScope.ServiceProvider.GetRequiredService<SongDbContext>();
     int mergedAway = UpvotedSongDeduplicator.MergeDuplicateUpvotedSongs(songDbContext);
     UpvotedSongDeduplicator.EnsureUniqueSongIndex(songDbContext);
+    // The sequence column of the incremental history pull: created by the migration, but a server that
+    // is started without applying it (or with a database that predates it) still works. Idempotent.
+    SongHistorySequencer.EnsureSequenceColumn(songDbContext);
     Console.WriteLine(mergedAway > 0
         ? $"Healed {mergedAway} duplicate upvotedSong row(s) at startup."
         : "No duplicate upvotedSong rows to heal at startup.");

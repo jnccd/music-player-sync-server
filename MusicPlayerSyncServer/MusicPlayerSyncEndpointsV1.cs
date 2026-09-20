@@ -19,6 +19,13 @@ public static class MusicPlayerSyncEndpointsV1
 {
     const string ROUTE_VERSION_PREFIX = "/v1";
 
+    /// <summary>
+    /// How many of the newest history entries are sent to a client that has no cursor yet but claims to
+    /// hold the whole history (see the /sync/pull bootstrap): it uses them to verify that its local
+    /// history is really up to date before it adopts the cursor, instead of downloading everything.
+    /// </summary>
+    const int HistoryVerificationTailSize = 50;
+
     public static void RegisterNotesEndpointsV1(this IEndpointRouteBuilder routes, IServiceProvider services)
     {
         var version1Api = routes.MapGroup(ROUTE_VERSION_PREFIX);
@@ -68,6 +75,8 @@ public static class MusicPlayerSyncEndpointsV1
 
                 songDbContext.UpvotedSongs.AddRange(request.Songs);
                 songDbContext.SongHistoryEntries.AddRange(request.HistoryEntries);
+                // The history of a fresh account starts its own sequence stream (see SongHistorySequencer).
+                SongHistorySequencer.AssignSequences(songDbContext, authedUser.UserId, request.HistoryEntries);
                 songDbContext.SaveChanges();
 
                 return Results.Ok();
@@ -78,15 +87,77 @@ public static class MusicPlayerSyncEndpointsV1
             [FromHeader(Name = "Authorization")] string? authTokenHeader,
             [FromServices] AuthService auth,
             [FromServices] SongDbContext songDbContext,
-            HttpClient httpClient) =>
+            HttpClient httpClient,
+            long? historySince = null,
+            int? historyCount = null) =>
         {
             return auth?.GetUser(authTokenHeader, httpClient, authedUser =>
             {
                 var songs = songDbContext.UpvotedSongs.Where(s => s.UserId == authedUser.UserId).ToArray();
-                var historyEntries = songDbContext.SongHistoryEntries.Where(h => h.UserId == authedUser.UserId).ToArray();
                 var migrations = songDbContext.SongLibraryMigrations.Where(m => m.UserId == authedUser.UserId).OrderBy(m => m.MigrationNumber).ToArray();
 
-                return Results.Ok(new SyncPullResponse(authedUser, songs, historyEntries, migrations));
+                // Incremental history pull (see SongHistorySequencer). The client sends the highest
+                // sequence it already has (historySince) and how many history entries it holds
+                // (historyCount); the songs are always complete. Without any parameter (older clients)
+                // the complete history is returned, exactly as before.
+                long maxSequence = SongHistorySequencer.GetMaxSequence(songDbContext, authedUser.UserId);
+                int totalHistoryCount = songDbContext.SongHistoryEntries.Count(h => h.UserId == authedUser.UserId);
+
+                bool resyncRequired = false;
+                long since = historySince ?? 0;
+                bool hasCursor = since > 0;
+                if (hasCursor && since > maxSequence)
+                {
+                    // The client knows more than this database does (e.g. the server database was
+                    // restored or rolled back): ask for a full pull so nothing is silently missing.
+                    resyncRequired = true;
+                    hasCursor = false;
+                    since = 0;
+                }
+
+                // Zero-download bootstrap: a client that has no cursor yet (first pull after the
+                // incremental feature was introduced) but already holds at least as many entries as the
+                // server says it has, is very likely fully synced. It gets only the newest entries as a
+                // verification tail instead of the whole history; when all of them are already present
+                // locally, the client adopts the cursor and never downloads the history again.
+                bool verifyTailOnly = !hasCursor && !resyncRequired
+                    && totalHistoryCount > 0
+                    && historyCount.HasValue && historyCount.Value >= totalHistoryCount;
+
+                SongHistoryEntry[] historyEntries;
+                bool isIncremental;
+                if (hasCursor)
+                {
+                    // ">=" (not ">"): entries that share a sequence (two votes racing) must never be
+                    // skipped; the client deduplicates them by their primary key.
+                    historyEntries = songDbContext.SongHistoryEntries
+                        .Where(h => h.UserId == authedUser.UserId && EF.Property<long>(h, "Sequence") >= since)
+                        .OrderBy(h => EF.Property<long>(h, "Sequence"))
+                        .ToArray();
+                    isIncremental = true;
+                }
+                else if (verifyTailOnly)
+                {
+                    historyEntries = songDbContext.SongHistoryEntries
+                        .Where(h => h.UserId == authedUser.UserId)
+                        .OrderByDescending(h => EF.Property<long>(h, "Sequence"))
+                        .Take(HistoryVerificationTailSize)
+                        .ToArray()
+                        .Reverse() // Ascending sequence of the tail
+                        .ToArray();
+                    isIncremental = true;
+                }
+                else
+                {
+                    historyEntries = songDbContext.SongHistoryEntries.Where(h => h.UserId == authedUser.UserId).ToArray();
+                    isIncremental = false;
+                }
+
+                if (verifyTailOnly)
+                    Console.WriteLine($"Incremental history bootstrap for user {authedUser.UserId}: verifying the newest {historyEntries.Length} of {totalHistoryCount} entries instead of sending the whole history.");
+
+                return Results.Ok(new SyncPullResponse(authedUser, songs, historyEntries, migrations,
+                    isIncremental, maxSequence, totalHistoryCount, resyncRequired));
             });
         });
 
@@ -291,6 +362,10 @@ public static class MusicPlayerSyncEndpointsV1
                 }
 
                 songDbContext.SongHistoryEntries.Add(entry);
+                // Give the new entry the next sequence of this user's history stream, so incremental
+                // clients receive it (and everything after their cursor).
+                SongHistorySequencer.AssignSequence(songDbContext, entry,
+                    SongHistorySequencer.GetMaxSequence(songDbContext, entry.UserId) + 1);
                 songDbContext.SaveChanges();
 
                 return Results.Ok();

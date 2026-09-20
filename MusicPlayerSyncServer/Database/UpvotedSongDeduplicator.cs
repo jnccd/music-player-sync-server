@@ -111,6 +111,10 @@ public static class UpvotedSongDeduplicator
 
         int movedHistory = 0;
         int droppedDuplicateEntries = 0;
+        // Moved entries get a FRESH sequence (continuing the user's stream) instead of keeping the old
+        // one: incremental clients are already past that cursor, so only a new sequence delivers the
+        // moved history to them (they keep/ignore their local entry under the old SongId).
+        long nextSequence = SongHistorySequencer.GetMaxSequence(songDbContext, keep.UserId);
         foreach (UpvotedSong removed in remove)
         {
             var removedHistory = songDbContext.SongHistoryEntries
@@ -121,7 +125,9 @@ public static class UpvotedSongDeduplicator
                 if (keepDates.Add(entry.Date))
                 {
                     songDbContext.SongHistoryEntries.Remove(entry);
-                    songDbContext.SongHistoryEntries.Add(new SongHistoryEntry(keep.SongId, entry.ScoreChange, entry.Date, keep.UserId));
+                    var movedEntry = new SongHistoryEntry(keep.SongId, entry.ScoreChange, entry.Date, keep.UserId);
+                    songDbContext.SongHistoryEntries.Add(movedEntry);
+                    SongHistorySequencer.AssignSequence(songDbContext, movedEntry, ++nextSequence);
                     movedHistory++;
                 }
                 else
