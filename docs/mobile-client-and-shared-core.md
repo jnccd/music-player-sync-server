@@ -131,6 +131,13 @@ resolve) as before.
   ends or is skipped, and a song skipped early is voted down by that same logic - exactly like the desktop
   client (an earlier mobile UI had `Dislike`/`Lock in`/`Upvote` buttons that called `SongVotingService`
   directly, which duplicated rules that already live in `GetNextSong`/`GetPreviousSong`).
+* **Media notification / background playback**: `MobilePlaybackNotificationService` is a foreground service
+  (type `mediaPlayback`) owning an ongoing `MediaStyle` notification and a `MediaSession` - cover art, title,
+  artist/album and previous/play-pause/next in the shade and on the lock screen. It is the reason playback
+  survives leaving the app. Its buttons call the same shared services the UI calls, so the vote logic cannot
+  drift between the two. Platform APIs only (`Notification.MediaStyle` + `MediaSession`), no AndroidX Media.
+  Note that the notification's progress row reads the duration from `MediaMetadata`, not from
+  `PlaybackState`.
 * **Launcher icon**: converted from the desktop client's `MusicPlayerAvaloniaPort/Assets/icon.ico` (the
   256x256 PNG frame embedded in it is extracted losslessly - Android cannot use `.ico`). Android 8+ gets a
   real **adaptive icon** (`mipmap-anydpi-v26/ic_launcher.xml`: `@color/ic_launcher_background` + a 108dp
