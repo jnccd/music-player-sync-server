@@ -28,7 +28,7 @@ Two kinds of duplicates exist:
 | Kind | Rows | Provable without the file? |
 |---|---|---|
 | **Exact duplicate** (flavor 1) | Same `(UserId, Name, Artist, Album)`, i.e. identical stored tags (incl. both empty) | Yes — pure database data. |
-| **Tag-completeness duplicate** (flavor 2) | Same `(UserId, Name)`, but one row carries the album/artist of the song while the other is metadata-less (`""`) | Only with an arbiter: the actual song file's tags (clients), or a *single tag signature* heuristic (server/without file). |
+| **Tag-completeness duplicate** (flavor 2) | Same `(UserId, Name)`, but one row recorded **fewer tags** than the other - fully metadata-less (`""`/`""`), or only one of album/artist (e.g. an artist pruned because it repeated the file name) | Only with an arbiter: the actual song file's tags (clients), or the *combined tags* heuristic (server/without file). |
 
 Untagged duplicates show up in statistics as two rows of the same song, and file→row resolution
 (`ResolveUpvotedSongEntry`) used to **throw** `InvalidDataException` when several rows matched one file.

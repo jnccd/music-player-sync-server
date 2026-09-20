@@ -50,12 +50,16 @@ public static class UpvotedSongDeduplicator
             }
         }
 
-        // 2. Tag-completeness duplicates: same user and file name, metadata-less rows plus tagged rows.
+        // 2. Tag-completeness duplicates: same user and file name, where one row recorded fewer tags than
+        // another (tagless rows of older clients, or an artist/album that was pruned on one client).
+        // There is deliberately NO "must contain a fully metadata-less row" precondition: a row that has
+        // only an album (or only an artist) is just as much a partial row. TryGetCombinedTags below
+        // decides whether the rows can be one song - partial rows have to share a field, and rows whose
+        // non-empty tags contradict each other are genuinely different songs. Exact-identity duplicates
+        // were already removed by pass 1.
         var tagCompletenessGroups = songDbContext.UpvotedSongs.ToArray()
             .GroupBy(s => new { s.UserId, s.Name })
             .Where(group => group.Count() > 1)
-            .Where(group => group.Any(s => SongFileMatching.HasNoAlbumOrArtist(s.Artist, s.Album))
-                         && group.Any(s => !SongFileMatching.HasNoAlbumOrArtist(s.Artist, s.Album)))
             .ToArray();
         foreach (var group in tagCompletenessGroups)
         {
