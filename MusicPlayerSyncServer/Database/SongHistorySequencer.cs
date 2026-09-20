@@ -58,48 +58,73 @@ public static class SongHistorySequencer
 
     /// <summary>
     /// Adds the sequence column and its index when they are missing and backfills the rows that predate
-    /// the feature (default 0). Safe to call on every startup: all statements are idempotent or guarded.
+    /// the feature (they carry the column default 0). Safe to call on every startup: the statements are
+    /// idempotent, and the (relatively expensive) backfill only runs while rows with sequence 0 exist.
     /// </summary>
     public static void EnsureSequenceColumn(SongDbContext songDbContext)
     {
-        bool columnWasMissing = false;
+        bool isSqlite = songDbContext.Database.IsSqlite();
+
         try
         {
-            songDbContext.Database.ExecuteSqlRaw(
-                songDbContext.Database.IsSqlite() ? SequenceColumnSqlSqlite : SequenceColumnSqlPostgres);
-            columnWasMissing = true; // Only reached when the column did not exist (otherwise the ALTER fails)
+            songDbContext.Database.ExecuteSqlRaw(isSqlite ? SequenceColumnSqlSqlite : SequenceColumnSqlPostgres);
         }
         catch (Exception ex)
         {
-            // Column already exists (fresh databases get it from the migration, existing ones from a
-            // previous run of this method). Nothing to do.
-            _ = ex;
+            // ADD COLUMN IF NOT EXISTS does not throw when the column is already there, so reaching this
+            // is an actual problem (e.g. missing permissions) rather than the normal "already exists" case.
+            Console.WriteLine($"Could not ensure the history sequence column: {ex.Message}");
         }
 
         try
         {
-            songDbContext.Database.ExecuteSqlRaw(
-                songDbContext.Database.IsSqlite() ? SequenceIndexSqlSqlite : SequenceIndexSqlPostgres);
+            songDbContext.Database.ExecuteSqlRaw(isSqlite ? SequenceIndexSqlSqlite : SequenceIndexSqlPostgres);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Could not ensure the history sequence index: {ex.Message}");
         }
 
-        if (!columnWasMissing)
-            return;
-
         try
         {
-            int backfilled = songDbContext.Database.ExecuteSqlRaw(
-                songDbContext.Database.IsSqlite() ? BackfillSqlSqlite : BackfillSqlPostgres);
-            Console.WriteLine($"Added the history sequence column and backfilled {backfilled} existing history entry/entries.");
+            if (!HasRowsWithoutSequence(songDbContext))
+            {
+                Console.WriteLine("History sequence column and index are up to date.");
+                return;
+            }
+
+            int backfilled = songDbContext.Database.ExecuteSqlRaw(isSqlite ? BackfillSqlSqlite : BackfillSqlPostgres);
+            Console.WriteLine($"Backfilled the history sequence of {backfilled} pre-existing history entry/entries.");
         }
         catch (Exception ex)
         {
-            // Existing rows then keep sequence 0 and are delivered by inclusive cursors; a later startup
-            // retries the backfill (see the "Sequence" = 0 guard in the statement).
-            Console.WriteLine($"History sequence backfill failed (existing entries stay at sequence 0): {ex.Message}");
+            // Rows without a sequence (0) are still delivered by the inclusive cursor / the full pull, so
+            // this is not fatal; the next startup retries (the backfill only touches sequence 0 rows).
+            Console.WriteLine($"History sequence backfill failed (pre-existing entries stay at sequence 0): {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// True while at least one history entry still carries the column default 0, i.e. predates the
+    /// sequence feature and has not been backfilled. Uses ADO directly so no provider-specific query
+    /// translation is involved.
+    /// </summary>
+    static bool HasRowsWithoutSequence(SongDbContext songDbContext)
+    {
+        var connection = songDbContext.Database.GetDbConnection();
+        bool openedHere = connection.State != System.Data.ConnectionState.Open;
+        if (openedHere)
+            songDbContext.Database.OpenConnection();
+        try
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT 1 FROM \"SongHistoryEntries\" WHERE \"Sequence\" = 0 LIMIT 1";
+            return command.ExecuteScalar() != null;
+        }
+        finally
+        {
+            if (openedHere)
+                songDbContext.Database.CloseConnection();
         }
     }
 

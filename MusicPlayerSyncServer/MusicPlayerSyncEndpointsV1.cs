@@ -124,6 +124,17 @@ public static class MusicPlayerSyncEndpointsV1
                     && totalHistoryCount > 0
                     && historyCount.HasValue && historyCount.Value >= totalHistoryCount;
 
+                // A client that has no cursor and is (slightly) BEHIND does not need the whole history
+                // either: the entries it misses are almost always the newest ones, so the newest
+                // "missing + verification tail" entries are sent as a bounded catch-up delta. The client
+                // verifies afterwards that its history is no longer smaller than the server's; when that
+                // fails (e.g. it was missing older entries too) it simply asks for the full history.
+                int? catchUpCount = null;
+                if (!hasCursor && !resyncRequired && !verifyTailOnly
+                    && totalHistoryCount > 0
+                    && historyCount.HasValue && historyCount.Value > 0 && historyCount.Value < totalHistoryCount)
+                    catchUpCount = totalHistoryCount - historyCount.Value + HistoryVerificationTailSize;
+
                 SongHistoryEntry[] historyEntries;
                 bool isIncremental;
                 if (hasCursor)
@@ -136,14 +147,15 @@ public static class MusicPlayerSyncEndpointsV1
                         .ToArray();
                     isIncremental = true;
                 }
-                else if (verifyTailOnly)
+                else if (verifyTailOnly || catchUpCount.HasValue)
                 {
+                    int take = verifyTailOnly ? HistoryVerificationTailSize : catchUpCount!.Value;
                     historyEntries = songDbContext.SongHistoryEntries
                         .Where(h => h.UserId == authedUser.UserId)
                         .OrderByDescending(h => EF.Property<long>(h, "Sequence"))
-                        .Take(HistoryVerificationTailSize)
+                        .Take(take)
                         .ToArray()
-                        .Reverse() // Ascending sequence of the tail
+                        .Reverse() // Ascending sequence of the sent window
                         .ToArray();
                     isIncremental = true;
                 }
@@ -155,6 +167,8 @@ public static class MusicPlayerSyncEndpointsV1
 
                 if (verifyTailOnly)
                     Console.WriteLine($"Incremental history bootstrap for user {authedUser.UserId}: verifying the newest {historyEntries.Length} of {totalHistoryCount} entries instead of sending the whole history.");
+                else if (catchUpCount.HasValue)
+                    Console.WriteLine($"Incremental history catch-up for user {authedUser.UserId}: client reported {historyCount} entries, sending the newest {historyEntries.Length} of {totalHistoryCount}.");
 
                 return Results.Ok(new SyncPullResponse(authedUser, songs, historyEntries, migrations,
                     isIncremental, maxSequence, totalHistoryCount, resyncRequired));

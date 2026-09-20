@@ -41,8 +41,14 @@ The response (`SyncPullResponse`) gained four optional fields:
 | `historySince > 0` and `<= max` | Entries with `Sequence >= historySince`, ascending, `IsIncremental = true`. |
 | `historySince > max` (client ahead of server) | Full history, `ResyncRequired = true`. |
 | no cursor, `historyCount >= TotalHistoryCount` | **Bootstrap**: only the newest `50` entries as a verification tail, `IsIncremental = true`. |
-| no cursor, otherwise | Full history, `IsIncremental = false` (old behaviour). |
+| no cursor, `0 < historyCount < TotalHistoryCount` | **Bounded catch-up**: the newest `TotalHistoryCount - historyCount + 50` entries, `IsIncremental = true`. |
+| no cursor, no/zero `historyCount` | Full history, `IsIncremental = false` (old behaviour, also the explicit "force full" request). |
 | params absent (old client) | Full history, `IsIncremental = false`. |
+
+The catch-up row matters in practice: a client that was offline for a few plays is a few entries behind,
+not "unknown" - it gets a delta proportional to how far behind it is instead of the whole history. The
+client then checks that its local history is no longer smaller than `TotalHistoryCount`; if the gap was
+not covered (e.g. it was missing *older* entries as well) it asks for the full history.
 
 `>=` (instead of `>`) is deliberate: two votes racing can produce entries that share a sequence, and an
 inclusive cursor guarantees they can never be skipped. Clients deduplicate by their primary key
@@ -116,6 +122,7 @@ flowchart TD
 |---|---|---|
 | Pull response, per pull | songs + **entire history** | songs + delta (usually a handful of entries) |
 | Pull response, first pull after upgrade | songs + entire history | songs + 50 entries (bootstrap) |
+| Pull response, client that was a few plays behind | songs + entire history | songs + (missing + 50) entries (catch-up) |
 | Pull response, fresh client / account | songs + entire history | songs + entire history (unavoidable: it has nothing) |
 | Vote / volume requests | one entry | unchanged |
 | `/sync/init` upload (account bootstrap only) | songs + **entire local history** | unchanged - still a full upload |
