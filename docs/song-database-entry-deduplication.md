@@ -425,6 +425,24 @@ machinery to DXMG would follow the same lifecycle if ever wanted.
   *and* the DB per write transaction, making thousands of small commits (scan registration, votes)
   take tens of ms each — measured as `Monitor.Enter_Slowpath` dominating a 7-minute load. WAL +
   `synchronous=NORMAL` cut commits to sub-ms.
+* **SQLite connections are deliberately not pooled** (`Pooling=False` in `SongDbContext`). With pooling on,
+  returning a connection to the pool runs Microsoft.Data.Sqlite's `Deactivate()`, which un-registers the
+  helper functions EF Core installs (`ef_add`, `regexp`, the `EF_DECIMAL` collation, …) via
+  `sqlite3_create_function(name, null)`. SQLite answers that with `SQLITE_BUSY` — *"unable to delete/modify
+  user-function due to active statements"* — whenever a prepared statement is still active on that
+  connection, which is what happens when a reader was **garbage collected but its finalizer has not run
+  yet**. The library scan (hundreds of files, several contexts in parallel, heavy read/write churn) hits
+  that window often enough to abort the *whole* scan: the client then has an empty song list, so it reports
+  a SQLite error in its status and cannot play anything until a rescan. It is an upstream
+  Microsoft.Data.Sqlite pool-return behaviour, **not lock contention**, so `busy_timeout` cannot help;
+  not pooling removes the step. The per-connection pragmas above are re-applied on every open anyway, so the
+  only cost is a real file open per context.
+* **`ChooseSongWithWeightedChances` could not handle a degenerate choosing list**: it indexed the list
+  without checking it (an empty list — e.g. after the failed scan above — surfaced as "Index was out of
+  range" instead of "there are no songs"), and its `do/while` retry spun **forever** when every entry in the
+  list was the current song (a one-song library, or a song whose weight dwarfs the rest). It now reports an
+  empty library clearly and gives up after a bounded number of tries, repeating the song when there is
+  nothing else to play.
 * **TagLib leak**: `GetAlbumAndArtistsFromSong` never disposed `TagLib.File` → thousands of open file
   handles until GC/finalizers, causing stalls during and after the scan. Fixed with `using`.
 * **EF Core 8 on .NET 10 cannot parameterize `array.Contains(...)`** inside a LINQ-to-Entities query

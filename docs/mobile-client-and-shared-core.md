@@ -121,11 +121,18 @@ resolve) as before.
   csproj re-declares them as `<AndroidNativeLibrary ... Abi="..."/>`, which packages them as
   `lib/<abi>/libminiaudio.so` inside the APK. Without that, playback compiles fine and fails at runtime with a
   `DllNotFoundException`.
-* **UI**: one view (`MobileMainView`) - artwork with embedded cover art (or a placeholder), title/artist,
-  seek slider, transport, ONE vote gesture, user volume, and a "most likely next" list built from
-  `SongChoosingService.GetSongChoosingChances()` (i.e. the real probability of the weighted pool, not a
-  guess). `Sync` opens a bottom sheet with host/account, login+pull, rescan, the folder the library is read
-  from and the library take-over prompt.
+* **UI**: one view (`MobileMainView`) - the header row is a **library search field**, then artwork with
+  embedded cover art (or a placeholder), title/artist, a single chip with the vote numbers, seek slider,
+  transport, ONE vote gesture (a round, icon-only heart) and the volume slider (0..200%).
+  `Sync` opens a bottom sheet with host/account, login+pull, rescan, the folder the library is read from and
+  the library take-over prompt.
+  There is no permanent status text on the player screen: the running log lives in the sheet's STATUS /
+  SYNC STATE fields, and the line under the search field is reserved for failures and action results, which
+  hide themselves after a few seconds. The search ranks with the shared modified-Levenshtein matching
+  (`SongPlaybackService.FindBestSongMatches`, the same one the desktop's "play a song quickly" flow uses) and
+  shows the best eight as a drop down; tapping one plays it. Everything the UI used to show that a listener
+  cannot act on is gone: the five most likely next songs (display-only), the play-chance chip, the
+  volume-normalization chip, the vote button's label and its explanation line.
 * **The UI never calls the voting service.** The single `Upvote` button only flips
   `SongPlaybackService.UpvoteLockedIn`; the vote itself is cast by the shared playback logic when the song
   ends or is skipped, and a song skipped early is voted down by that same logic - exactly like the desktop
@@ -138,6 +145,16 @@ resolve) as before.
   drift between the two. Platform APIs only (`Notification.MediaStyle` + `MediaSession`), no AndroidX Media.
   Note that the notification's progress row reads the duration from `MediaMetadata`, not from
   `PlaybackState`.
+* **Sync session controls**: the mobile sync sheet exposes "Log in & upload" (`Init(..., TryCallApiInit: true)`,
+  the whole-library `/sync/init` bootstrap plus the queued-retry pass), "Log in (no upload)"
+  (`TryCallApiInit: false` *and* `RetryUnsyncedEntries: false` - pull only, nothing is sent) and "Log out"
+  (`SongSyncService.Logout()`). Logging out only forgets the stored refresh token locally; the local database
+  and the configured account name stay, so the library keeps working offline. There is no Keycloak logout call
+  because `EzAuth` exposes no logout endpoint. A logged-out client makes no requests at all: the network paths
+  check the session, and queued uploads/votes stay queued instead of being lost. Verified by
+  `.build-check/sync-login-harness` against a fake sync server (asserts that "no upload" never sends
+  `POST /v1/sync/init` while the ordinary login does, and that logout clears the session without touching the
+  database).
 * **Launcher icon**: converted from the desktop client's `MusicPlayerAvaloniaPort/Assets/icon.ico` (the
   256x256 PNG frame embedded in it is extracted losslessly - Android cannot use `.ico`). Android 8+ gets a
   real **adaptive icon** (`mipmap-anydpi-v26/ic_launcher.xml`: `@color/ic_launcher_background` + a 108dp
